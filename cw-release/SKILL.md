@@ -170,11 +170,25 @@ git push --set-upstream origin <BRANCH>
 
 ---
 
-## Step 6: Run `make gitflow/version/file`
+## Step 6: Run `make gitflow/version/file` (Template Repositories Only)
 
-This writes the computed version to `.cloudopsworks/_VERSION` or `.github/_VERSION`,
-commits `chore: Version Bump`, and pushes to the current branch.
+> **This step is skipped for implementation repositories.**
+> `make gitflow/version/file` computes the next version from branch history and commits
+> a `chore: Version Bump` to the feature branch. For implementation repos, CI owns
+> versioning — it runs GitVersion after the merge commit lands on `master` and pushes
+> the tag automatically. Running this manually on an implementation repo creates a
+> spurious commit on the feature branch and must never be done.
 
+**If `IS_TEMPLATE=false` → skip this entire step.**
+
+For `IS_TEMPLATE=false`, read the current version file to capture `CURRENT_VERSION`
+for use in the changelog (Step 13). The actual `NEW_VERSION` will be known only after
+CI creates the tag post-merge (Step 10):
+```bash
+cat .cloudopsworks/_VERSION 2>/dev/null || cat .github/_VERSION 2>/dev/null
+```
+
+**If `IS_TEMPLATE=true`**, run:
 ```bash
 make gitflow/version/file
 ```
