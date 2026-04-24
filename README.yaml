@@ -1,13 +1,12 @@
-name: <project name>
+name: CloudOps Works Agent Skills
 
-#logo: logo/logo.jpg
 badges:
   - name: Latest Release
-    image: https://img.shields.io/github/release/<owner/repo>.svg?style=for-the-badge
-    url: https://github.com/<owner/repo>/releases/latest
+    image: https://img.shields.io/github/release/cloudopsworks/claude-code-skills.svg?style=for-the-badge
+    url: https://github.com/cloudopsworks/claude-code-skills/releases/latest
   - name: Last Updated
-    image: https://img.shields.io/github/last-commit/<owner/repo>.svg?style=for-the-badge
-    url: https://github.com/<owner/repo>/commits
+    image: https://img.shields.io/github/last-commit/cloudopsworks/claude-code-skills.svg?style=for-the-badge
+    url: https://github.com/cloudopsworks/claude-code-skills/commits
 
 license: "APACHE2"
 
@@ -16,30 +15,100 @@ copyrights:
     url: "https://cloudopsworks.co"
     year: "2021"
 
-github_repo: <owner/repo>
-
+github_repo: cloudopsworks/claude-code-skills
 
 description: |-
-  <description>.
+  CloudOps Works reusable agent skills for Claude Code, OpenCode, and Codex,
+  including automated installation helpers and release-oriented workflows.
 
-# Introduction to the project
 introduction: |-
-#  This is an introduction.
+  This repository packages CloudOps Works skills as portable automation units for
+  supported coding agents.
 
-# How to use this project
+  The repository is designed around a YAML-first documentation workflow:
+  `README.yaml` is the maintained source of truth, while `README.md` is generated
+  from it.
+
+  Current packaged skills include:
+
+  | Skill | Purpose |
+  |-------|---------|
+  | `cw-release` | Release workflow for repositories using GitVersion GitFlow or GitHubFlow semantics |
+  | `cw-readme` | YAML-first README maintenance workflow for CloudOps Works repositories |
+
 usage: |-
+  Install all discovered CloudOps Works skills everywhere:
 
-# Example usage
+  ```bash
+  ./scripts/install-cloudopsworks-skills.sh
+  ```
+
+  Install only one skill:
+
+  ```bash
+  ./scripts/install-cloudopsworks-skills.sh --skill cw-release
+  ```
+
+  Install multiple selected skills:
+
+  ```bash
+  ./scripts/install-cloudopsworks-skills.sh --skill cw-release --skill cw-readme
+  ```
+
+  Install only for Codex using copied directories instead of symlinks:
+
+  ```bash
+  ./scripts/install-cloudopsworks-skills.sh --target codex --mode copy
+  ```
+
+  Upgrade all installed skills:
+
+  ```bash
+  ./scripts/upgrade-cloudopsworks-skills.sh
+  ```
+
+  Default install locations:
+
+  - Claude Code: `~/.claude/skills/<skill>`
+  - OpenCode: `~/.config/opencode/commands/<skill>/<skill>.md`
+  - Codex: `~/.codex/skills/<skill>`
+
+  Optional environment overrides:
+
+  - `CLAUDE_CODE_HOME`
+  - `OPENCODE_HOME`
+  - `CODEX_HOME`
+
 examples: |-
+  Invoke the release workflow in a compatible agent after installation:
 
-# How to get started quickly
+  ```text
+  /cw-release
+  ```
+
+  Invoke the README maintenance workflow:
+
+  ```text
+  /cw-readme
+  ```
+
+  Backward-compatible single-skill installer wrappers remain available:
+
+  ```bash
+  ./scripts/install-cw-release.sh
+  ./scripts/upgrade-cw-release.sh
+  ```
+
 quickstart: |-
+  1. Clone the repository.
+  2. Run `./scripts/install-cloudopsworks-skills.sh`.
+  3. Use `/cw-release` for release automation.
+  4. Use `/cw-readme` when maintaining YAML-first documentation.
+  5. When repository documentation changes, update `README.yaml` first and run `make readme` last.
 
-# Uncomment to include terraform generated docs (optional)
-#include:
-#  - "docs/targets.md"
-#  - "docs/terraform.md"
+include:
+  - "docs/targets.md"
 
 contributors:
-  - name: "<contributor name>"
-    github: "<github id>"
+  - name: "Cristian Beraha"
+    github: "berahac"

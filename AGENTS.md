@@ -28,6 +28,13 @@ Backward-compatible single-skill wrappers may exist, but the generic multi-skill
   - forceable overwrite for upgrades
   - generated OpenCode command output derived from each skill's `SKILL.md`
 
+## Documentation treatment
+
+- `README.yaml` is the maintained source of truth for repository documentation.
+- `README.md` is generated output and must be regenerated with `make readme` as the last documentation step.
+- When documentation changes, edit `README.yaml` first, then regenerate `README.md`.
+- Prefer adding reusable documentation workflow help as a `cw-` skill when it reduces repeated manual guidance.
+
 ## Agent expectations
 
 - Prefer updating the install/upgrade scripts over writing manual install steps.
