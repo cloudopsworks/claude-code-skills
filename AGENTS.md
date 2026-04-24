@@ -44,6 +44,12 @@ Backward-compatible single-skill wrappers may exist, but the generic multi-skill
 - Verify installer changes by running them against an isolated temporary home before claiming completion.
 - Do not introduce new dependencies for installation automation unless explicitly requested.
 
+## Makefile / Tronador contract
+
+- Tronador is required in this repository and must remain included from the Makefile exactly as provided.
+- New Make targets may be added when needed, but the Tronador include must not be removed, duplicated, superseded, or replaced by a local reimplementation.
+- Treat Tronador-provided behavior as the source of truth for shared automation; extend around it instead of overriding it.
+
 ## Verification requirements
 
 After installer changes, verify at minimum:
