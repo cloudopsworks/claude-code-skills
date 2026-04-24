@@ -6,7 +6,7 @@
 #       WebSite: https://cloudops.works
 #     Distributed Under Apache v2.0 License
 #
-name: Terraform Module Scan
+name: Skills module scan
 on:
   workflow_dispatch: {}
   pull_request: {}
@@ -15,10 +15,11 @@ on:
       - main
       - master
     paths:
-      - scan.yml
-      - '**/*.tf'
-      - '**/*.tfvars'
-      - '**/terraform.tfvars'
+      - .github/workflows/**
+      - '*/SKILL.md'
+      - scripts/**
+      - README.yaml
+      - README.md
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -48,30 +49,6 @@ jobs:
       - name: Pipeline Configuration
         id: config
         uses: ./bp/ci/config/terraform
-
-
-  checkov:
-    name: Checkov Scan
-    runs-on: ubuntu-latest
-    needs:
-      - preload
-    if: |
-      (github.actor != 'dependabot[bot]') &&  
-      (needs.preload.outputs.checkov_enabled == 'true')
-    steps:
-      - name: Checkout w/Blueprint
-        uses: cloudopsworks/blueprints/cd/checkout@v5.10
-        with:
-          token: ${{ secrets.BOT_TOKEN }}
-          source_ref: ${{ github.base_ref }}
-          blueprint_ref: 'v5.10'
-
-      - name: Run Checkov Checks
-        id: checkov
-        uses: ./bp/ci/terraform/scan/checkov
-        with:
-          token: ${{ secrets.BOT_TOKEN }}
-
 
   secrets-scan:
     name: Secret Scanning

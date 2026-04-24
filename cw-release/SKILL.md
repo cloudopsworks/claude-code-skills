@@ -1,6 +1,6 @@
 ---
 name: cw-release
-version: 1.2.0
+version: 1.2.1
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow from
   .cloudopsworks/gitversion.yaml (default: GitFlow), chooses branch and semver
@@ -22,8 +22,10 @@ allowed-tools:
 You are executing the CloudOps Works release workflow for a repository that may
 use either GitFlow or GitHubFlow semantics through GitVersion. Detect the active
 flow from `.cloudopsworks/gitversion.yaml`; if the file does not exist, assume
-GitFlow. Follow every step in order. Never skip flow detection. Never ask for
-unnecessary confirmation — proceed autonomously unless a STOP point is reached.
+GitFlow. Follow every step in order. Never skip flow detection. Any detected
+uncommitted changes that are part of the release must be captured in a new
+conventional commit before the workflow continues past staging/commit. Never ask
+for unnecessary confirmation — proceed autonomously unless a STOP point is reached.
 
 ---
 
@@ -84,6 +86,8 @@ Read and understand what changed. Identify:
 - **Files touched**: classify each file as docs, implementation, workflow, boilerplate, or config.
 
 **STOP HERE** if there are no unstaged/uncommitted changes AND no user-specified content to commit. Tell the user: "No changes detected. Nothing to release."
+
+If unstaged or uncommitted changes are present, they must be turned into a fresh **conventional commit** in Step 4 before any push, PR, merge, tag, or publish action occurs. Do not carry forward ad hoc or non-conventional WIP for release automation.
 
 ---
 
@@ -170,15 +174,19 @@ git add <files>
 git status
 ```
 
-Craft a conventional commit message following this format:
+All uncommitted changes included in this release must be captured in a **new conventional commit** created in this step. Do not continue with uncommitted work, ad hoc snapshots, or non-conventional commit text.
+
+Craft the commit message following this format:
 ```
 <type>: <concise description of what changed> <SEMVER_ANNOTATION>
 ```
 
-Where `<type>` is one of: `fix`, `feat`, `docs`, `refactor`, `chore`, `build`.
+Where `<type>` is one of: `fix`, `feat`, `docs`, `refactor`, `chore`, `build`. Choose the type that best matches the actual uncommitted changes being released.
 
 The message body (multi-line) should enumerate the specific changes as bullet points.
 Do NOT describe the semver level in prose — only include the annotation keyword.
+
+**STOP** if the operator attempts to proceed without creating this conventional commit for the current uncommitted changes.
 
 Example:
 ```bash
@@ -469,6 +477,7 @@ Print a concise summary:
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
 - **Never use `--no-verify`** on commits or pushes.
+- **Uncommitted changes must become a conventional commit before release actions continue.** Do not push, open a PR, merge, tag, or publish while relevant release changes remain uncommitted.
 - **`fix/` branches** are not first-class GitVersion branches in either bundled config and are not natively supported by tronador gitflow targets. Prefer `feature/*` by default, and use `hotfix/*` only when the detected flow and repo automation support it.
 - **GitVersion flow detection** (Step 0):
   - Read `.cloudopsworks/gitversion.yaml` first.
