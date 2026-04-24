@@ -771,3 +771,8 @@ cython_debug/
 .omc/
 .omx/
 .bin/
+
+# Tronador generated
+.tronador
+.tronador*.mk
+tronador/

@@ -63,3 +63,12 @@ After installer changes, verify at minimum:
 ## Scope
 
 These instructions apply to the repository root and all child paths.
+
+## Release management
+
+- Can use `cw-release` skill for streamlined release processes, but this case has some exceptions to the rule as follow.
+- This repo is not a template, treat as it is.
+- .cloudopsworks/_VERSION should be updated anyway with the new version, call `make gitflow/version/file` before PR.
+- Applies waiting to github checks before PR merging.
+- Always use conventional commits formatting on commit messages.
+- Release Management is done by GH actions, no explicit GH release creation or modification are needed.
