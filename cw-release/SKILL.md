@@ -1,12 +1,12 @@
 ---
 name: cw-release
-version: 1.1.0
+version: 1.2.0
 description: |
-  CloudOps Works Terraform module full release workflow. Automates the entire
-  tronador gitflow cycle: branch creation, conventional commit, push,
-  make gitflow/version/file, PR creation, checks wait, merge, tag, publish,
-  and GitHub release with changelog. Use when asked to "release", "ship a fix",
-  "create a fix branch", "hotfix", "feature branch and PR", or "merge and tag".
+  CloudOps Works release workflow. Detects the repository GitVersion flow from
+  .cloudopsworks/gitversion.yaml (default: GitFlow), chooses branch and semver
+  behavior accordingly, then drives the shared tronador make/gh release path.
+  Use when asked to "release", "ship a fix", "create a release branch",
+  "hotfix", "feature branch and PR", or "merge and tag".
 allowed-tools:
   - Bash
   - Read
@@ -19,9 +19,11 @@ allowed-tools:
 
 # CloudOps Works Release Skill (`/cw-release`)
 
-You are executing the full CloudOps Works tronador gitflow release workflow for a
-Terraform module repository. Follow every step in order. Never skip steps. Never
-ask for unnecessary confirmation — proceed autonomously unless a STOP point is reached.
+You are executing the CloudOps Works release workflow for a repository that may
+use either GitFlow or GitHubFlow semantics through GitVersion. Detect the active
+flow from `.cloudopsworks/gitversion.yaml`; if the file does not exist, assume
+GitFlow. Follow every step in order. Never skip flow detection. Never ask for
+unnecessary confirmation — proceed autonomously unless a STOP point is reached.
 
 ---
 
@@ -40,6 +42,22 @@ Verify:
 - We are in a git repository with a valid remote.
 - The current branch is `master` (or `main`). If not, **STOP** and ask the user if they want to continue from a non-master branch.
 - Capture: `CURRENT_VERSION` (from `_VERSION` file or latest tag), `REPO_SLUG` (from remote URL, e.g. `cloudopsworks/terraform-module-template`), `MAIN_BRANCH` (`master` or `main`).
+
+**Detect GitVersion flow** — run:
+```bash
+if [ -f .cloudopsworks/gitversion.yaml ]; then
+  sed -n '1,220p' .cloudopsworks/gitversion.yaml
+else
+  echo "MISSING_GITVERSION_CONFIG"
+fi
+```
+
+Set `RELEASE_FLOW` using this rule:
+- If `.cloudopsworks/gitversion.yaml` is missing → `RELEASE_FLOW=gitflow` (default assumption).
+- If the config defines `develop:` or `hotfix:` or `support:` branches → `RELEASE_FLOW=gitflow`.
+- If the config defines `main`, `release`, `feature`, `pull-request` and does **not** define `develop:` → `RELEASE_FLOW=githubflow`.
+
+Capture: `RELEASE_FLOW` (`gitflow` / `githubflow`).
 
 **Detect repository type** — run:
 ```bash
@@ -71,47 +89,69 @@ Read and understand what changed. Identify:
 
 ## Step 2: Determine Branch Type and Semver Level
 
-Use the table below to auto-select branch type and semver level from the nature of changes. If ambiguous, use `AskUserQuestion`.
+Use the matrix that matches `RELEASE_FLOW` to auto-select branch type and semver level from the nature of changes. If ambiguous, use `AskUserQuestion`.
 
-| Change Nature                            | Branch Type | Semver Level | Annotation          |
-|------------------------------------------|-------------|--------------|---------------------|
-| Docs-only fix / wording correction       | `hotfix`    | PATCH        | `+semver: patch`    |
-| Workflow / template upgrade (patch)      | `hotfix`    | PATCH        | `+semver: patch`    |
-| Bug fix in implementation                | `fix`       | PATCH        | `+semver: fix`      |
-| Workflow / template upgrade (minor)      | `feature`   | MINOR        | `+semver: minor`    |
-| New module feature                       | `feature`   | MINOR        | `+semver: feature`  |
-| Provider upgrade (backwards-compatible)  | `feature`   | MINOR        | `+semver: minor`    |
-| Provider major upgrade / breaking change | `feature`   | MAJOR        | `+semver: major`    |
+### If `RELEASE_FLOW=gitflow`
 
-> **Reminder:** `+semver: breaking` triggers MINOR, not MAJOR. Use `+semver: major` for true breaking changes.
+| Change Nature                            | Branch Type | Semver Level | Annotation             |
+|------------------------------------------|-------------|--------------|------------------------|
+| Docs-only fix / wording correction       | `hotfix`    | PATCH        | `+semver: patch`       |
+| Workflow / template upgrade (patch)      | `hotfix`    | PATCH        | `+semver: patch`       |
+| Bug fix in implementation                | `hotfix`    | PATCH        | `+semver: fix`         |
+| Workflow / template upgrade (minor)      | `feature`   | MINOR        | `+semver: minor`       |
+| New module feature                       | `feature`   | MINOR        | `+semver: feature`     |
+| Provider upgrade (backwards-compatible)  | `feature`   | MINOR        | `+semver: minor`       |
+| Provider major upgrade / breaking change | `feature`   | MAJOR        | `+semver: major`       |
+| Explicit compatibility break             | `feature`   | MAJOR        | `+semver: breaking` or `+semver: major` |
 
-Capture: `BRANCH_TYPE` (`fix`, `hotfix`, `feature`), `SEMVER_ANNOTATION`, `SEMVER_LEVEL`.
+> **GitFlow reminder:** in the bundled GitFlow config, `+semver: breaking` and `+semver: major` both trigger a MAJOR bump.
+
+### If `RELEASE_FLOW=githubflow`
+
+| Change Nature                            | Branch Type | Semver Level | Annotation                    |
+|------------------------------------------|-------------|--------------|-------------------------------|
+| Docs-only fix / wording correction       | `feature`   | PATCH        | `+semver: patch`              |
+| Workflow / template upgrade (patch)      | `feature`   | PATCH        | `+semver: patch` or `+semver: hotfix` |
+| Bug fix in implementation                | `feature`   | PATCH        | `+semver: fix`                |
+| Workflow / template upgrade (minor)      | `feature`   | MINOR        | `+semver: minor`              |
+| New module feature                       | `feature`   | MINOR        | `+semver: feature`            |
+| Provider upgrade (backwards-compatible)  | `feature`   | MINOR        | `+semver: minor`              |
+| Provider major upgrade / breaking change | `feature`   | MAJOR        | `+semver: major`              |
+| Explicit compatibility break, but still minor by policy | `feature` | MINOR | `+semver: breaking` |
+
+> **GitHubFlow reminder:** in the bundled GitHubFlow config, `+semver: breaking` triggers MINOR, not MAJOR. Use `+semver: major` for a true major release.
+
+Capture: `BRANCH_TYPE` (usually `feature` or `hotfix`), `SEMVER_ANNOTATION`, `SEMVER_LEVEL`. Avoid `fix/*` as a default branch strategy because it is not a first-class GitVersion branch in either bundled config.
 
 ---
 
 ## Step 3: Determine Branch Name
 
-For `hotfix` branches, tronador auto-names them with the version bump:
+Choose the branch strategy that matches `RELEASE_FLOW`.
+
+For `RELEASE_FLOW=gitflow` and `BRANCH_TYPE=hotfix`, tronador auto-names the branch with the version bump:
 ```bash
 make gitflow/hotfix/start
 BRANCH=$(git branch --show-current)
 ```
 
-For `fix` or `feature` branches, derive a short slug from the changed files or change
+For `feature` branches, derive a short slug from the changed files or change
 nature (max 30 chars, kebab-case, no special chars). Examples: `agents-md-guidelines`,
 `vpc-outputs`, `provider-upgrade-v5`.
 
-For `fix`:
-```bash
-git checkout -b fix/<slug> <MAIN_BRANCH>
-BRANCH="fix/<slug>"
-```
-
-For `feature`:
+For `RELEASE_FLOW=gitflow` and `BRANCH_TYPE=feature`:
 ```bash
 make gitflow/feature/start-no-develop:<slug>
 BRANCH="feature/<slug>"
 ```
+
+For `RELEASE_FLOW=githubflow`, default to `feature/<slug>` even for patch-only work:
+```bash
+make gitflow/feature/start-no-develop:<slug>
+BRANCH="feature/<slug>"
+```
+
+Only use `hotfix/*` in `githubflow` repositories if repo-local automation explicitly expects it (for example workflow conditions, labelers, or docs that reference `hotfix/**`). Do not default to `fix/*` unless the repository clearly documents that convention.
 
 Verify the branch was created:
 ```bash
@@ -174,10 +214,11 @@ git push --set-upstream origin <BRANCH>
 
 > **This step is skipped for implementation repositories.**
 > `make gitflow/version/file` computes the next version from branch history and commits
-> a `chore: Version Bump` to the feature branch. For implementation repos, CI owns
-> versioning — it runs GitVersion after the merge commit lands on `master` and pushes
-> the tag automatically. Running this manually on an implementation repo creates a
-> spurious commit on the feature branch and must never be done.
+> a `chore: Version Bump` to the feature branch. The target name stays under the shared
+> `gitflow/...` make namespace even in repositories whose GitVersion model is GitHubFlow.
+> For implementation repos, CI owns versioning — it runs GitVersion after the merge commit
+> lands on `master` and pushes the tag automatically. Running this manually on an
+> implementation repo creates a spurious commit on the feature branch and must never be done.
 
 **If `IS_TEMPLATE=false` → skip this entire step.**
 
@@ -283,7 +324,7 @@ Confirm the merge commit appears in the log.
 
 ## Step 11: Clean Up Local Branch (optional)
 
-Only delete if branch type is `fix` or `feature` (hotfix branches are tracked by tronador).
+Only delete if branch type is `feature` (hotfix branches are tracked by tronador).
 Ask user: "Delete local branch `<BRANCH>`?"
 
 If yes:
@@ -297,11 +338,12 @@ git branch -d <BRANCH>
 
 > **This step is skipped for implementation repositories.**
 > Tag and publish via `make` is only applicable to **template repositories**
-> (those without `versions.tf` or `.cloudopsworks/.provider`).
-> For implementation repos, CI automatically creates the tag and release
-> when the merge commit is pushed to `master`.
+> (those without `versions.tf` or `.cloudopsworks/.provider`). The target names remain
+> `make gitflow/version/tag gitflow/version/publish` even when the repository's
+> GitVersion branching model is GitHubFlow. For implementation repos, CI automatically
+> creates the tag and release when the merge commit is pushed to `master`.
 
-**If `IS_TEMPLATE=false` → skip this entire step and proceed to Step 13.**
+**If `IS_TEMPLATE=false` → skip this entire step and proceed to Step 15.**
 
 If `IS_TEMPLATE=true`, run both targets:
 
@@ -326,7 +368,7 @@ Proceed to Step 13.
 
 ---
 
-## Step 13: Build Changelog
+## Step 13: Build Changelog (Template Repositories Only)
 
 Get commits between the previous tag and the new tag:
 
@@ -371,7 +413,7 @@ Where `<commit-url>` = `https://github.com/<REPO_SLUG>/commit/<full-sha>`.
 
 ---
 
-## Step 14: Create or Update GitHub Release
+## Step 14: Create or Update GitHub Release (Template Repositories Only)
 
 First check if the release already exists (CI may have auto-created it):
 
@@ -427,7 +469,13 @@ Print a concise summary:
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
 - **Never use `--no-verify`** on commits or pushes.
-- **`fix/` branches** are not natively supported by tronador gitflow targets (which only recognize `feature/` and `hotfix/`). Create them manually with `git checkout -b fix/<name>` and manage PR lifecycle with `gh` CLI directly.
+- **`fix/` branches** are not first-class GitVersion branches in either bundled config and are not natively supported by tronador gitflow targets. Prefer `feature/*` by default, and use `hotfix/*` only when the detected flow and repo automation support it.
+- **GitVersion flow detection** (Step 0):
+  - Read `.cloudopsworks/gitversion.yaml` first.
+  - If the file is missing, assume `RELEASE_FLOW=gitflow`.
+  - If the config contains `develop:` or `hotfix:` or `support:` branches, treat it as GitFlow.
+  - If the config has `main` + `release` + `feature` + `pull-request` and no `develop:`, treat it as GitHubFlow.
+  - Flow detection controls branch choice and semver interpretation, **not** the shared `make gitflow/...` target names.
 - **Template vs Implementation detection** (Step 0 / Step 12):
   - `IS_TEMPLATE=false` when `versions.tf` **or** `.cloudopsworks/.provider` exists → implementation repo → skip `make gitflow/version/tag gitflow/version/publish`.
   - `IS_TEMPLATE=true` only when neither file exists → template repo → run tag & publish.
