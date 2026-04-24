@@ -1,0 +1,27 @@
+##
+# (c) 2021-2026
+#     Cloud Ops Works LLC - https://cloudops.works/
+#     Find us on:
+#       GitHub: https://github.com/cloudopsworks
+#       WebSite: https://cloudops.works
+#     Distributed Under Apache v2.0 License
+#
+name: auto-assign
+on:
+  pull_request: 
+    types: 
+      - opened
+      - reopened
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  reviewers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: cloudopsworks/auto-assign@v1.2.1
+        with:
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          configuration-path: '.cloudopsworks/auto-assign.yml'
