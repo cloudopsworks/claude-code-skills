@@ -1,10 +1,10 @@
 ---
 name: cw-release
-version: 1.2.1
+version: 1.2.2
 description: |
-  CloudOps Works release workflow. Detects the repository GitVersion flow from
-  .cloudopsworks/gitversion.yaml (default: GitFlow), chooses branch and semver
-  behavior accordingly, then drives the shared tronador make/gh release path.
+  CloudOps Works release workflow. Detects the repository GitVersion flow and
+  repo-local release policy, stays portable across Claude Code, Codex, and
+  OpenCode, and then drives the shared tronador make/gh release path.
   Use when asked to "release", "ship a fix", "create a release branch",
   "hotfix", "feature branch and PR", or "merge and tag".
 allowed-tools:
@@ -22,10 +22,30 @@ allowed-tools:
 You are executing the CloudOps Works release workflow for a repository that may
 use either GitFlow or GitHubFlow semantics through GitVersion. Detect the active
 flow from `.cloudopsworks/gitversion.yaml`; if the file does not exist, assume
-GitFlow. Follow every step in order. Never skip flow detection. Any detected
-uncommitted changes that are part of the release must be captured in a new
-conventional commit before the workflow continues past staging/commit. Never ask
-for unnecessary confirmation — proceed autonomously unless a STOP point is reached.
+GitFlow. Then detect any repo-local release policy from `AGENTS.md`, version
+files, and GitHub workflows before deciding whether versioning happens on-branch,
+after merge in CI, or both. Follow every step in order. Never skip flow or
+policy detection. Any detected uncommitted changes that are part of the release
+must be captured in a new conventional commit before the workflow continues past
+staging/commit. Never ask for unnecessary confirmation — proceed autonomously
+unless a STOP point is reached.
+
+---
+
+## Runtime Portability Rules
+
+- Treat this document body as the source of truth even when the current tool
+  wraps or strips frontmatter (for example generated OpenCode commands).
+- Use the current runtime's equivalent shell / read / edit / grep capabilities.
+  If the platform names tools differently, execute the same git, gh, make, and
+  file-inspection steps with the available equivalents.
+- When this skill says `AskUserQuestion`, use the runtime's native question tool
+  if available; otherwise ask exactly one concise plain-text question in chat.
+- Prefer repo-local policy over generic heuristics when they conflict. In
+  particular, if `AGENTS.md` or repo workflows explicitly define version-file,
+  merge, or publish behavior, follow those rules even if the repository is not a
+  Terraform module. This keeps Claude Code, Codex, and generated OpenCode
+  commands aligned on the same release behavior.
 
 ---
 
@@ -61,15 +81,35 @@ Set `RELEASE_FLOW` using this rule:
 
 Capture: `RELEASE_FLOW` (`gitflow` / `githubflow`).
 
+**Interpret bundled examples carefully:**
+- `cw-release/gitflow/gitversion.yaml` = GitFlow reference where `+semver: breaking` implies MAJOR.
+- `cw-release/githubflow/gitversion.yaml` = generic GitHubFlow reference where `+semver: breaking` also implies MAJOR.
+- `cw-release/githubflow-cloudopsworks-spec/gitversion.yaml` = CloudOps Works GitHubFlow policy, matching this repository, where `+semver: breaking` implies MINOR and `+semver: major` is required for a MAJOR bump.
+- When a repository already has `.cloudopsworks/gitversion.yaml`, trust that file over bundled examples.
+
 **Detect repository type** — run:
 ```bash
-ls versions.tf .cloudopsworks/.provider 2>/dev/null | head -1
+ls versions.tf .cloudopsworks/.provider .cloudopsworks/_VERSION 2>/dev/null
 ```
 
-- If either `versions.tf` **or** `.cloudopsworks/.provider` exists → set `IS_TEMPLATE=false` (implementation repo).
-- If neither exists → set `IS_TEMPLATE=true` (template repository).
+- If either `versions.tf` **or** `.cloudopsworks/.provider` exists → set `IS_TEMPLATE=false` (Terraform implementation repo).
+- If neither exists → set `IS_TEMPLATE=true` (non-implementation repo by the legacy heuristic).
+- If `.cloudopsworks/_VERSION` exists, capture it as a repo-managed version file even when the repo is **not** a Terraform template.
 
-Capture: `IS_TEMPLATE` (`true` / `false`). This controls whether Step 12 (tag & publish) runs.
+Capture: `IS_TEMPLATE` (`true` / `false`). Do **not** use this value alone to decide publish behavior.
+
+**Detect repo-local release policy** — run:
+```bash
+sed -n '1,260p' AGENTS.md 2>/dev/null || true
+ls .github/workflows/pr-merge-tagging.yml .github/workflows/release-management.yml 2>/dev/null || true
+```
+
+Set the following policy flags:
+- `RUN_VERSION_FILE_BEFORE_PR=true` when repo-local instructions explicitly require `make gitflow/version/file` before the PR, or when the repo's maintained version file must be updated on-branch.
+- `PUBLISH_MODE=ci` when repo-local instructions say releases are handled by GitHub Actions **or** when merge-tagging / release-management workflows clearly own tag + publish after merge.
+- `PUBLISH_MODE=local` only when no repo-local CI release owner is detected and the operator is expected to create or edit the tag/release directly.
+
+Capture: `RUN_VERSION_FILE_BEFORE_PR` (`true` / `false`) and `PUBLISH_MODE` (`ci` / `local`). These control Steps 6 and 12-14.
 
 ---
 
@@ -123,7 +163,10 @@ Use the matrix that matches `RELEASE_FLOW` to auto-select branch type and semver
 | Provider major upgrade / breaking change | `feature`   | MAJOR        | `+semver: major`              |
 | Explicit compatibility break, but still minor by policy | `feature` | MINOR | `+semver: breaking` |
 
-> **GitHubFlow reminder:** in the bundled GitHubFlow config, `+semver: breaking` triggers MINOR, not MAJOR. Use `+semver: major` for a true major release.
+> **GitHubFlow reminder:** inspect the repository's actual `major-version-bump-message` and `minor-version-bump-message`.
+> - In the generic bundled GitHubFlow example, `+semver: breaking` triggers MAJOR.
+> - In the CloudOps Works GitHubFlow spec and this repository's config, `+semver: breaking` triggers MINOR.
+> Use `+semver: major` whenever you need an unambiguous MAJOR release.
 
 Capture: `BRANCH_TYPE` (usually `feature` or `hotfix`), `SEMVER_ANNOTATION`, `SEMVER_LEVEL`. Avoid `fix/*` as a default branch strategy because it is not a first-class GitVersion branch in either bundled config.
 
@@ -218,26 +261,25 @@ git push --set-upstream origin <BRANCH>
 
 ---
 
-## Step 6: Run `make gitflow/version/file` (Template Repositories Only)
+## Step 6: Run `make gitflow/version/file` When Repo Policy Requires It
 
-> **This step is skipped for implementation repositories.**
-> `make gitflow/version/file` computes the next version from branch history and commits
-> a `chore: Version Bump` to the feature branch. The target name stays under the shared
-> `gitflow/...` make namespace even in repositories whose GitVersion model is GitHubFlow.
-> For implementation repos, CI owns versioning — it runs GitVersion after the merge commit
-> lands on `master` and pushes the tag automatically. Running this manually on an
-> implementation repo creates a spurious commit on the feature branch and must never be done.
+`make gitflow/version/file` computes the next version from branch history and commits
+a `chore: Version Bump` to the working branch. The target name stays under the shared
+`gitflow/...` make namespace even in repositories whose GitVersion model is GitHubFlow.
 
-**If `IS_TEMPLATE=false` → skip this entire step.**
+Decision rule:
+- If `RUN_VERSION_FILE_BEFORE_PR=true` → run this step, even when the repository is a
+  non-Terraform repo such as this skills repository.
+- If `RUN_VERSION_FILE_BEFORE_PR=false` and `IS_TEMPLATE=false` → skip this step.
+- If `RUN_VERSION_FILE_BEFORE_PR=false` and `IS_TEMPLATE=true` → run this step only if
+  the repo has no contrary local release policy.
 
-For `IS_TEMPLATE=false`, read the current version file to capture `CURRENT_VERSION`
-for use in the changelog (Step 13). The actual `NEW_VERSION` will be known only after
-CI creates the tag post-merge (Step 10):
+If skipping, read the current version file (when present) to capture `CURRENT_VERSION`:
 ```bash
-cat .cloudopsworks/_VERSION 2>/dev/null || cat .github/_VERSION 2>/dev/null
+cat .cloudopsworks/_VERSION 2>/dev/null || cat .github/_VERSION 2>/dev/null || true
 ```
 
-**If `IS_TEMPLATE=true`**, run:
+If running, execute:
 ```bash
 make gitflow/version/file
 ```
@@ -342,18 +384,17 @@ git branch -d <BRANCH>
 
 ---
 
-## Step 12: Tag and Publish (Template Repositories Only)
+## Step 12: Tag and Publish (Local-Publish Repositories Only)
 
-> **This step is skipped for implementation repositories.**
-> Tag and publish via `make` is only applicable to **template repositories**
-> (those without `versions.tf` or `.cloudopsworks/.provider`). The target names remain
-> `make gitflow/version/tag gitflow/version/publish` even when the repository's
-> GitVersion branching model is GitHubFlow. For implementation repos, CI automatically
-> creates the tag and release when the merge commit is pushed to `master`.
+Tag and publish via `make` is only applicable when `PUBLISH_MODE=local`. The
+shared target names remain `make gitflow/version/tag gitflow/version/publish`
+even when the repository's GitVersion branching model is GitHubFlow.
 
-**If `IS_TEMPLATE=false` → skip this entire step and proceed to Step 15.**
+Decision rule:
+- If `PUBLISH_MODE=ci` → skip this entire step and proceed to Step 15. CI owns tag + release after merge.
+- If `PUBLISH_MODE=local` → run both targets below.
 
-If `IS_TEMPLATE=true`, run both targets:
+If `PUBLISH_MODE=local`, run:
 
 ```bash
 make gitflow/version/tag gitflow/version/publish
@@ -376,7 +417,7 @@ Proceed to Step 13.
 
 ---
 
-## Step 13: Build Changelog (Template Repositories Only)
+## Step 13: Build Changelog (Local-Publish Repositories Only)
 
 Get commits between the previous tag and the new tag:
 
@@ -421,7 +462,7 @@ Where `<commit-url>` = `https://github.com/<REPO_SLUG>/commit/<full-sha>`.
 
 ---
 
-## Step 14: Create or Update GitHub Release (Template Repositories Only)
+## Step 14: Create or Update GitHub Release (Local-Publish Repositories Only)
 
 First check if the release already exists (CI may have auto-created it):
 
@@ -458,9 +499,8 @@ Print a concise summary:
 
 - Branch:   <BRANCH>
 - PR:       #<PR_NUMBER>  (<URL>)
-- Version:  <PREV_VERSION> → <NEW_TAG>
-- Tag:      <NEW_TAG> (pushed)
-- Release:  <release URL>
+- Version:  <PREV_VERSION> → <NEW_TAG or pending CI tag>
+- Publish:  <release URL or "GitHub Actions after merge">
 ```
 
 ---
@@ -470,9 +510,9 @@ Print a concise summary:
 - **Never push directly to master.** Always use a branch.
 - **Never squash or rebase on merge.** Always `--merge`.
 - **`+semver:` annotation must be in the body of the merge commit**, not just the title, for GitVersion to pick it up.
-- **`make gitflow/version/file` commits and pushes.** Do not re-commit or re-push after it runs.
+- **`make gitflow/version/file` may create its own version-bump commit.** After it runs, inspect `git status` / `git log` before adding more commits.
 - **`make gitflow/hotfix/start` auto-names the branch** with the bumped patch version. Capture the branch name after running it.
-- **Release "already exists" is normal** — CI workflows often auto-create a release from the tag push. Use `gh release edit` in that case.
+- **Release "already exists" is normal** — CI workflows often auto-create a release from the tag push. Use `gh release edit` only when `PUBLISH_MODE=local` and you are the release publisher.
 - **If `gh pr checks` reports "no checks"** — this is valid for branches without CI. Proceed to merge.
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
@@ -485,7 +525,8 @@ Print a concise summary:
   - If the config contains `develop:` or `hotfix:` or `support:` branches, treat it as GitFlow.
   - If the config has `main` + `release` + `feature` + `pull-request` and no `develop:`, treat it as GitHubFlow.
   - Flow detection controls branch choice and semver interpretation, **not** the shared `make gitflow/...` target names.
-- **Template vs Implementation detection** (Step 0 / Step 12):
-  - `IS_TEMPLATE=false` when `versions.tf` **or** `.cloudopsworks/.provider` exists → implementation repo → skip `make gitflow/version/tag gitflow/version/publish`.
-  - `IS_TEMPLATE=true` only when neither file exists → template repo → run tag & publish.
-  - If detection is ambiguous, check the repo name: `terraform-module-template` = template; any other `terraform-module-*` = implementation.
+- **Repo-local release policy overrides generic heuristics** (Step 0 / Steps 6, 12-14):
+  - If `AGENTS.md` says GitHub Actions handle releases, set `PUBLISH_MODE=ci` and skip local release creation.
+  - If `AGENTS.md` explicitly requires `make gitflow/version/file` before a PR, do it even when the repo is not a Terraform template.
+  - Use `IS_TEMPLATE` only as a fallback signal; it must not override explicit repo-local policy.
+- **GitHubFlow semver note**: some repos intentionally map `+semver: breaking` to MINOR. Always trust the repo's actual `major-version-bump-message` / `minor-version-bump-message` config over generic assumptions.
