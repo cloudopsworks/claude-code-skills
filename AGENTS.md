@@ -66,9 +66,12 @@ These instructions apply to the repository root and all child paths.
 
 ## Release management
 
-- Can use `cw-release` skill for streamlined release processes, but this case has some exceptions to the rule as follow.
-- This repo is not a template, treat as it is.
-- .cloudopsworks/_VERSION should be updated anyway with the new version, call `make gitflow/version/file` before PR.
-- Applies waiting to github checks before PR merging.
-- Always use conventional commits formatting on commit messages.
-- Release Management is done by GH actions, no explicit GH release creation or modification are needed.
+- Can use `cw-release` skill for streamlined release processes, but follow this repository's concrete policy over generic template heuristics.
+- This repository uses the GitHubFlow-style GitVersion config in `.cloudopsworks/gitversion.yaml` (`main` / `release` / `feature` / `pull-request`, no `develop`).
+- For this repository, branch release work from `main` using `feature/*`; do not default to `hotfix/*` or `fix/*` unless a repo-local rule explicitly requires it.
+- In this repository's GitVersion config, `+semver: breaking` maps to a **MINOR** bump. Use `+semver: major` for a true MAJOR release.
+- `.cloudopsworks/_VERSION` must be updated on the working branch before the PR by running `make gitflow/version/file`.
+- Wait for GitHub checks before merging the PR.
+- Use conventional commits for authored commits and merge the PR with a merge commit so GitVersion can read the merge body semver annotation.
+- Never push directly to `main`, and do not squash-merge or rebase-merge release PRs.
+- Tagging, publishing, and GitHub Release creation for this repository are handled by GitHub Actions after merge; do not create or edit GitHub releases manually as part of the normal workflow.
