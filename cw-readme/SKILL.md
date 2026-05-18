@@ -24,6 +24,9 @@ where `README.yaml` is the source of truth and `README.md` is generated from it.
 - Treat `README.yaml` as the only maintained source document.
 - Update `README.md` only by running `make readme` as the final step.
 - Preserve repository-specific documentation conventions from the active `AGENTS.md`.
+- If the task includes committing the documentation changes, follow the repo's
+  commit policy from `AGENTS.md`. Default to a conventional-commit subject
+  line, and append any required repo-local trailers or annotations.
 - Prefer concise, operator-friendly documentation written in human-readable Markdown blocks inside YAML fields.
 
 ## Workflow
@@ -42,6 +45,8 @@ where `README.yaml` is the source of truth and `README.md` is generated from it.
 4. If examples or command snippets changed, ensure referenced files/scripts actually exist.
 5. Run `make readme` last.
 6. Verify `README.md` reflects the new YAML content.
+7. If the user asked for a commit, stage only the documentation changes and
+   create the commit using the repo's required conventional-commit format.
 
 ## Expected output
 
