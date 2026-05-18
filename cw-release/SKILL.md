@@ -1,6 +1,6 @@
 ---
 name: cw-release
-version: 1.2.2
+version: 1.2.3
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow and
   repo-local release policy, stays portable across Claude Code, Codex, and
@@ -90,13 +90,18 @@ Capture: `RELEASE_FLOW` (`gitflow` / `githubflow`).
 **Detect repository type** — run:
 ```bash
 ls versions.tf .cloudopsworks/.provider .cloudopsworks/_VERSION 2>/dev/null
+gh repo view <REPO_SLUG> --json isTemplate 2>/dev/null || echo '{"isTemplate":null}'
 ```
 
 - If either `versions.tf` **or** `.cloudopsworks/.provider` exists → set `IS_TEMPLATE=false` (Terraform implementation repo).
 - If neither exists → set `IS_TEMPLATE=true` (non-implementation repo by the legacy heuristic).
+- If `gh repo view` reports `"isTemplate": true`, treat that as authoritative confirmation that the GitHub repository is a template repository even if the legacy heuristic is inconclusive.
+- If `gh repo view` reports `"isTemplate": false`, keep the repo-local heuristic in mind; some repositories behave operationally like templates even when the GitHub template flag is disabled.
+- If `gh repo view` is unavailable or unauthenticated, fall back to the repo-local heuristic above.
 - If `.cloudopsworks/_VERSION` exists, capture it as a repo-managed version file even when the repo is **not** a Terraform template.
+- Set `IS_TEMPLATE=true` when either the repo-local heuristic says template **or** `gh repo view` says `isTemplate=true`.
 
-Capture: `IS_TEMPLATE` (`true` / `false`). Do **not** use this value alone to decide publish behavior.
+Capture: `GH_IS_TEMPLATE` (`true` / `false` / `unknown`) and `IS_TEMPLATE` (`true` / `false`). Do **not** use `IS_TEMPLATE` alone to decide publish behavior.
 
 **Detect repo-local release policy** — run:
 ```bash
@@ -169,6 +174,12 @@ Use the matrix that matches `RELEASE_FLOW` to auto-select branch type and semver
 > Use `+semver: major` whenever you need an unambiguous MAJOR release.
 
 Capture: `BRANCH_TYPE` (usually `feature` or `hotfix`), `SEMVER_ANNOTATION`, `SEMVER_LEVEL`. Avoid `fix/*` as a default branch strategy because it is not a first-class GitVersion branch in either bundled config.
+
+After `BRANCH_TYPE` is known, set `PURGE_RELEASE_BRANCH`:
+- If `IS_TEMPLATE=true` **and** `BRANCH_TYPE=feature` → `PURGE_RELEASE_BRANCH=true`
+- Otherwise → `PURGE_RELEASE_BRANCH=false`
+
+Template repositories should not retain merged `feature/*` release branches locally or remotely.
 
 ---
 
@@ -356,8 +367,12 @@ gh pr merge <PR_NUMBER> --repo <REPO_SLUG> --merge \
 
 <SEMVER_ANNOTATION>
 EOF
-)" --delete-branch=false
+)" <DELETE_BRANCH_FLAG>
 ```
+
+Resolve `<DELETE_BRANCH_FLAG>` as follows before running the command:
+- If `PURGE_RELEASE_BRANCH=true` → use `--delete-branch`
+- Otherwise → use `--delete-branch=false`
 
 Verify merge:
 ```bash
@@ -380,14 +395,45 @@ Confirm the merge commit appears in the log.
 
 ---
 
-## Step 11: Clean Up Local Branch (optional)
+## Step 11: Clean Up Release Branch
+
+Choose the cleanup path from `PURGE_RELEASE_BRANCH`:
+
+- If `PURGE_RELEASE_BRANCH=true`: purge the merged `feature/*` branch from both remote and local automatically. Do **not** ask for confirmation.
+- If `PURGE_RELEASE_BRANCH=false`: keep the previous conservative behavior — only offer optional local deletion for `feature/*` branches, and do not force remote deletion.
+
+### Template-style repositories (`PURGE_RELEASE_BRANCH=true`)
+
+After Step 10, verify the branch is gone remotely; if not, delete it explicitly. Then delete the local branch if it still exists.
+
+```bash
+git fetch origin --prune
+
+if git ls-remote --exit-code --heads origin "<BRANCH>" >/dev/null 2>&1; then
+  git push origin --delete "<BRANCH>"
+fi
+
+if git show-ref --verify --quiet "refs/heads/<BRANCH>"; then
+  git branch -D "<BRANCH>"
+fi
+
+git fetch origin --prune
+git branch --list "<BRANCH>"
+git branch -r --list "origin/<BRANCH>"
+```
+
+Success condition:
+- `git branch --list "<BRANCH>"` returns nothing
+- `git branch -r --list "origin/<BRANCH>"` returns nothing
+
+### Non-template repositories (`PURGE_RELEASE_BRANCH=false`)
 
 Only delete if branch type is `feature` (hotfix branches are tracked by tronador).
 Ask user: "Delete local branch `<BRANCH>`?"
 
 If yes:
 ```bash
-git branch -d <BRANCH>
+git branch -d "<BRANCH>"
 ```
 
 ---
