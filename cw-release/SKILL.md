@@ -228,6 +228,9 @@ Where `<type>` is one of: `fix`, `feat`, `docs`, `refactor`, `chore`, `build`. C
 
 The message body (multi-line) should enumerate the specific changes as bullet points.
 Do NOT describe the semver level in prose — only include the annotation keyword.
+If the active repository `AGENTS.md` requires additional commit trailers or
+decision-record metadata, keep the first line in conventional-commit format and
+append the repo-required trailers after the bullet list and semver annotation.
 
 **STOP** if the operator attempts to proceed without creating this conventional commit for the current uncommitted changes.
 
@@ -242,6 +245,11 @@ fix: improve AGENTS.md guidelines with outputs section and dependency management
 - Fix wording: 'Use make as been provided' -> 'Use make as provided'
 
 +semver: fix
+
+Constraint: Follow repo-local release and commit policy from AGENTS.md
+Confidence: high
+Scope-risk: narrow
+Tested: reviewed affected release guidance
 EOF
 )"
 ```
@@ -518,6 +526,9 @@ Print a concise summary:
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
 - **Never use `--no-verify`** on commits or pushes.
 - **Uncommitted changes must become a conventional commit before release actions continue.** Do not push, open a PR, merge, tag, or publish while relevant release changes remain uncommitted.
+- **If repo-local policy requires commit trailers** (for example Lore-style
+  decision-record trailers), preserve them in addition to the conventional
+  commit subject and semver annotation.
 - **`fix/` branches** are not first-class GitVersion branches in either bundled config and are not natively supported by tronador gitflow targets. Prefer `feature/*` by default, and use `hotfix/*` only when the detected flow and repo automation support it.
 - **GitVersion flow detection** (Step 0):
   - Read `.cloudopsworks/gitversion.yaml` first.
