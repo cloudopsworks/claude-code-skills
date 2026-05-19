@@ -1,6 +1,6 @@
 ---
 name: cw-release
-version: 1.2.4
+version: 1.2.5
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow and
   repo-local release policy, stays portable across Claude Code, Codex, and
@@ -125,6 +125,16 @@ Detect CI requirement from AGENTS.md content:
   via the GitHub API).
 
 Capture: `CI_REQUIRED` (`true` / `false` / `unknown`).
+
+Detect remote branch preservation requirement:
+- `PRESERVE_REMOTE_BRANCH=true` when `PUBLISH_MODE=ci` — CI workflows (e.g.
+  `pr-merge-tagging.yml`, `release-management.yml`) run post-merge and may need the
+  source branch to remain intact for tagging, GitVersion resolution, or artifact
+  attribution. Remote branch deletion must never race with active CI workflows.
+- `PRESERVE_REMOTE_BRANCH=false` when `PUBLISH_MODE=local`.
+
+Capture: `PRESERVE_REMOTE_BRANCH` (`true` / `false`). This overrides
+`PURGE_RELEASE_BRANCH` for any remote deletion decision in Steps 9 and 11.
 
 ---
 
@@ -417,8 +427,12 @@ EOF
 ```
 
 Resolve `<DELETE_BRANCH_FLAG>` as follows before running the command:
-- If `PURGE_RELEASE_BRANCH=true` → use `--delete-branch`
+- If `PURGE_RELEASE_BRANCH=true` AND `PRESERVE_REMOTE_BRANCH=false` → use `--delete-branch`
 - Otherwise → use `--delete-branch=false`
+
+Never use `--delete-branch` when `PRESERVE_REMOTE_BRANCH=true`, regardless of
+`PURGE_RELEASE_BRANCH`. Active CI workflows must be able to complete before any
+remote branch is removed.
 
 Verify merge:
 ```bash
@@ -443,14 +457,34 @@ Confirm the merge commit appears in the log.
 
 ## Step 11: Clean Up Release Branch
 
-Choose the cleanup path from `PURGE_RELEASE_BRANCH`:
+Choose the cleanup path from `PURGE_RELEASE_BRANCH` **and** `PRESERVE_REMOTE_BRANCH`:
 
-- If `PURGE_RELEASE_BRANCH=true`: purge the merged `feature/*` branch from both remote and local automatically. Do **not** ask for confirmation.
+- If `PURGE_RELEASE_BRANCH=true` and `PRESERVE_REMOTE_BRANCH=false`: purge the merged `feature/*` branch from both remote and local automatically. Do **not** ask for confirmation.
+- If `PURGE_RELEASE_BRANCH=true` and `PRESERVE_REMOTE_BRANCH=true`: delete the local branch only. Never touch the remote — CI owns cleanup.
 - If `PURGE_RELEASE_BRANCH=false`: keep the previous conservative behavior — only offer optional local deletion for `feature/*` branches, and do not force remote deletion.
 
 ### Template-style repositories (`PURGE_RELEASE_BRANCH=true`)
 
-After Step 10, verify the branch is gone remotely; if not, delete it explicitly. Then delete the local branch if it still exists.
+**First, check `PRESERVE_REMOTE_BRANCH`** before any deletion.
+
+#### When `PRESERVE_REMOTE_BRANCH=true` (CI workflows are active)
+
+Remote branch deletion is forbidden. Only delete the local branch:
+
+```bash
+if git show-ref --verify --quiet "refs/heads/<BRANCH>"; then
+  git branch -D "<BRANCH>"
+fi
+```
+
+The remote branch will be cleaned up by CI (e.g. `pr-merge-tagging.yml`) after it
+completes. Do not delete it manually.
+
+Success condition: `git branch --list "<BRANCH>"` returns nothing (local only).
+
+#### When `PRESERVE_REMOTE_BRANCH=false` (no active CI workflows)
+
+Delete from both remote and local automatically. Do **not** ask for confirmation.
 
 ```bash
 git fetch origin --prune
@@ -613,6 +647,7 @@ Print a concise summary:
 - **`make gitflow/version/file` may create its own version-bump commit.** After it runs, inspect `git status` / `git log` before adding more commits.
 - **`make gitflow/hotfix/start` auto-names the branch** with the bumped patch version. Capture the branch name after running it.
 - **Release "already exists" is normal** — CI workflows often auto-create a release from the tag push. Use `gh release edit` only when `PUBLISH_MODE=local` and you are the release publisher.
+- **Never delete the remote branch when `PRESERVE_REMOTE_BRANCH=true`** — when `PUBLISH_MODE=ci` (e.g. `pr-merge-tagging.yml` or `release-management.yml` is present and active), the remote branch must remain intact until CI completes. Never pass `--delete-branch` to `gh pr merge` and never run `git push origin --delete` in this case. Only delete the local branch. CI is responsible for any remote cleanup it requires.
 - **If `gh pr checks` or `statusCheckRollup` reports no checks** — this is ambiguous: checks may not have registered yet. Always complete Step 8a–8b (60-second poll + CI presence check) before concluding CI is absent. Never interpret "no checks" as "no CI" without evidence.
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
