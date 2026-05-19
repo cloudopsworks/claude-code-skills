@@ -1,6 +1,6 @@
 ---
 name: cw-release
-version: 1.2.3
+version: 1.2.4
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow and
   repo-local release policy, stays portable across Claude Code, Codex, and
@@ -115,6 +115,16 @@ Set the following policy flags:
 - `PUBLISH_MODE=local` only when no repo-local CI release owner is detected and the operator is expected to create or edit the tag/release directly.
 
 Capture: `RUN_VERSION_FILE_BEFORE_PR` (`true` / `false`) and `PUBLISH_MODE` (`ci` / `local`). These control Steps 6 and 12-14.
+
+Detect CI requirement from AGENTS.md content:
+- `CI_REQUIRED=true` when AGENTS.md contains phrases like "wait for checks", "checks must
+  pass", "CI required", "do not merge until checks", or when `PUBLISH_MODE=ci`.
+- `CI_REQUIRED=false` when AGENTS.md explicitly says "no CI", "no checks", or the repo has
+  no `.github/workflows/` directory.
+- `CI_REQUIRED=unknown` when AGENTS.md is silent on the topic (default; resolved in Step 8
+  via the GitHub API).
+
+Capture: `CI_REQUIRED` (`true` / `false` / `unknown`).
 
 ---
 
@@ -339,17 +349,53 @@ Capture: `PR_NUMBER` from the output URL (last path segment).
 
 ---
 
-## Step 8: Wait for CI Checks
+## Step 8: Wait for CI Checks (BLOCKING — never skip or shortcut)
 
+This step is the sole gate before merge. Do not proceed to Step 9 until all checks
+pass or CI is confirmed absent. There is no bypass.
+
+**8a. Poll for check registration (max 60 seconds).**
+
+Run the following loop — it exits when at least one check appears or 60 seconds elapse:
+```bash
+for i in $(seq 1 6); do
+  COUNT=$(gh pr view <PR_NUMBER> --repo <REPO_SLUG> \
+    --json statusCheckRollup --jq '.statusCheckRollup | length')
+  [ "$COUNT" -gt 0 ] && break
+  echo "No checks yet (attempt $i/6). Waiting 10s..."
+  sleep 10
+done
+```
+
+**8b. If `COUNT` is still 0 after the loop — determine if CI is expected.**
+
+Use `CI_REQUIRED` captured in Step 0:
+- If `CI_REQUIRED=true` → **STOP**: "No checks registered after 60s despite CI being
+  required. Investigate GitHub Actions configuration before merging."
+- If `CI_REQUIRED=false` → no CI configured; proceed to Step 9.
+- If `CI_REQUIRED=unknown`:
+  ```bash
+  gh api repos/<REPO_SLUG>/actions/workflows \
+    --jq '[.workflows[] | select(.state=="active")] | length'
+  ```
+  - If count > 0 → **STOP** with the same message as `CI_REQUIRED=true`.
+  - If count == 0 → no CI configured; proceed to Step 9.
+
+**8c. Wait for all checks to complete:**
 ```bash
 gh pr checks <PR_NUMBER> --repo <REPO_SLUG> --watch
 ```
 
-If the command exits with "no checks reported": the repo has no CI configured for
-this branch. Treat as passing — proceed to Step 9.
+**8d. After `--watch` exits, verify final state:**
+```bash
+gh pr checks <PR_NUMBER> --repo <REPO_SLUG>
+```
 
-If any check **fails**: **STOP**. Report the failed check name and logs. Do not merge.
-Ask the user: "Check `<name>` failed. Fix and re-push, or force-merge?"
+If **ANY** check is not in a pass / success / ✓ state → **STOP**. Report the failed
+check name and logs. Ask the user: "Check `<name>` failed. Fix and re-push, or
+force-merge?"
+
+Only proceed to Step 9 when **ALL** reported checks are passing.
 
 ---
 
@@ -567,7 +613,7 @@ Print a concise summary:
 - **`make gitflow/version/file` may create its own version-bump commit.** After it runs, inspect `git status` / `git log` before adding more commits.
 - **`make gitflow/hotfix/start` auto-names the branch** with the bumped patch version. Capture the branch name after running it.
 - **Release "already exists" is normal** — CI workflows often auto-create a release from the tag push. Use `gh release edit` only when `PUBLISH_MODE=local` and you are the release publisher.
-- **If `gh pr checks` reports "no checks"** — this is valid for branches without CI. Proceed to merge.
+- **If `gh pr checks` or `statusCheckRollup` reports no checks** — this is ambiguous: checks may not have registered yet. Always complete Step 8a–8b (60-second poll + CI presence check) before concluding CI is absent. Never interpret "no checks" as "no CI" without evidence.
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
 - **Never use `--no-verify`** on commits or pushes.
