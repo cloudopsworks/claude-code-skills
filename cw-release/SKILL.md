@@ -1,6 +1,6 @@
 ---
 name: cw-release
-version: 1.2.5
+version: 1.3.0
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow and
   repo-local release policy, stays portable across Claude Code, Codex, and
@@ -153,6 +153,151 @@ Read and understand what changed. Identify:
 **STOP HERE** if there are no unstaged/uncommitted changes AND no user-specified content to commit. Tell the user: "No changes detected. Nothing to release."
 
 If unstaged or uncommitted changes are present, they must be turned into a fresh **conventional commit** in Step 4 before any push, PR, merge, tag, or publish action occurs. Do not carry forward ad hoc or non-conventional WIP for release automation.
+
+---
+
+## Step 1.5: Workflow Safety Guard
+
+Run immediately after Step 1. Inspect every GitHub Actions workflow file in the pending
+diff and enforce repository-type policies before any branch, commit, or push action
+proceeds. Violations **always** result in a STOP with `AskUserQuestion` — never
+auto-fix or silently skip a guard without explicit user clearance.
+
+```bash
+CHANGED_WORKFLOWS=$(git diff HEAD --name-only 2>/dev/null \
+  | grep -E '\.github/workflows/.*\.(yml|yaml)$' || true)
+ADDED_WORKFLOWS=$(git ls-files --others --exclude-standard 2>/dev/null \
+  | grep -E '\.github/workflows/.*\.(yml|yaml)$' || true)
+ALL_CHANGED_WORKFLOWS=$(printf '%s\n%s' "$CHANGED_WORKFLOWS" "$ADDED_WORKFLOWS" \
+  | grep -v '^$' | sort -u || true)
+echo "CHANGED_WORKFLOWS:"
+echo "$ALL_CHANGED_WORKFLOWS"
+```
+
+**If `ALL_CHANGED_WORKFLOWS` is empty — skip this step entirely and continue to Step 2.**
+
+---
+
+### Guard 1 — Implementation repository: workflow file protection
+
+**Applies when:** `IS_TEMPLATE=false` AND `ALL_CHANGED_WORKFLOWS` is non-empty.
+
+**This guard is a hard block. There is no clearance path and no bypass option.**
+Workflow files in implementation repositories are owned by upstream templates.
+The agent must not commit, push, or release them under any circumstance.
+
+**STOP.** Immediately revert the workflow files without asking:
+
+```bash
+git checkout HEAD -- $ALL_CHANGED_WORKFLOWS
+```
+
+Then use `AskUserQuestion` to inform the user:
+
+State:
+- The project slug and current branch.
+- That this is an **implementation repository** — workflow files under `.github/workflows/` are managed by upstream templates and have been automatically reverted.
+- The list of files that were reverted.
+- That if this change is genuinely required, it must go through the upstream template repository and be synced down — not applied directly here.
+
+Options:
+- A) Continue the release without the workflow changes (files have been reverted)
+- B) Abort the release — I will handle the workflow change through the template repo first
+
+If the user chooses A: continue to Step 2 (workflow files no longer in scope; skip Guard 2 and Guard 3).
+If the user chooses B: **STOP** the entire release workflow. Do not proceed.
+
+---
+
+### Guard 2 — Template repository: blueprint and local action version references
+
+**Applies when:** `IS_TEMPLATE=true` AND `ALL_CHANGED_WORKFLOWS` is non-empty.
+
+Scan every changed workflow file for `uses:` entries that reference
+`cloudopsworks/blueprints` or `./bp` actions pinned with a full three-part semver
+(`@vX.Y.Z`). The required format for these references is `@vX.Y` (major.minor only —
+no patch segment).
+
+```bash
+BLUEPRINT_VIOLATIONS=""
+for wf in $ALL_CHANGED_WORKFLOWS; do
+  [ -f "$wf" ] || continue
+  MATCHES=$(grep -n 'uses:' "$wf" \
+    | grep -E '(cloudopsworks/blueprints|\.\/bp)' \
+    | grep -E '@v[0-9]+\.[0-9]+\.[0-9]+' 2>/dev/null || true)
+  [ -n "$MATCHES" ] && BLUEPRINT_VIOLATIONS="${BLUEPRINT_VIOLATIONS}  [${wf}]
+${MATCHES}
+"
+done
+printf '%s\n' "BLUEPRINT_VIOLATIONS:${BLUEPRINT_VIOLATIONS}"
+```
+
+**If `BLUEPRINT_VIOLATIONS` is empty — skip Guard 2 and proceed to Guard 3.**
+
+If violations are found, **STOP.** Use `AskUserQuestion`:
+
+State:
+- The project slug, current branch, and each violation (file path, line number, and offending `uses:` value).
+- That template workflow files must pin `cloudopsworks/blueprints` and `./bp` actions with `@vX.Y` (major.minor), not full semver `@vX.Y.Z`.
+- Correct format example: `uses: cloudopsworks/blueprints/.github/actions/my-action@v5.10`
+
+Options:
+- A) Auto-correct — strip the patch segment from all flagged blueprint/bp references now
+- B) Proceed with clearance — I confirm these pinned versions are intentional
+
+If the user chooses A: for each flagged `uses:` line use the `Edit` tool to replace
+`@vX.Y.Z` with `@vX.Y` (keep major and minor, remove the `.Z` patch segment).
+Confirm each edit. Set `GUARD_2_AUTOCORRECTED=true`. Proceed to Guard 3.
+
+If the user chooses B: set `WORKFLOW_GUARD_2_CLEARED=true`. Proceed to Guard 3.
+
+---
+
+### Guard 3 — Template repository: all other action version references
+
+**Applies when:** `IS_TEMPLATE=true` AND `ALL_CHANGED_WORKFLOWS` is non-empty.
+
+Scan every changed workflow file for `uses:` entries referencing any action that is
+**not** `cloudopsworks/blueprints` or `./bp` and that uses more than a major-only
+version pin. The required format for all other external actions is `@vX` (major only).
+Any `@vX.Y`, `@vX.Y.Z`, or deeper pin is a violation.
+
+```bash
+OTHER_VIOLATIONS=""
+for wf in $ALL_CHANGED_WORKFLOWS; do
+  [ -f "$wf" ] || continue
+  MATCHES=$(grep -n 'uses:' "$wf" \
+    | grep -Ev '(cloudopsworks/blueprints|\.\/bp)' \
+    | grep -E '@v[0-9]+\.[0-9]+' 2>/dev/null || true)
+  [ -n "$MATCHES" ] && OTHER_VIOLATIONS="${OTHER_VIOLATIONS}  [${wf}]
+${MATCHES}
+"
+done
+printf '%s\n' "OTHER_VIOLATIONS:${OTHER_VIOLATIONS}"
+```
+
+**If `OTHER_VIOLATIONS` is empty — skip Guard 3 and continue to Step 2.**
+
+If violations are found, **STOP.** Use `AskUserQuestion`:
+
+State:
+- The project slug, current branch, and each violation (file path, line number, and offending `uses:` value).
+- That template workflow files must reference external actions with major-only version pins (`@vX`), not `@vX.Y` or `@vX.Y.Z`.
+- Correct format examples: `uses: actions/checkout@v4`, `uses: hashicorp/setup-terraform@v3`
+
+Options:
+- A) Auto-correct — strip minor/patch segments from all flagged external action references now
+- B) Proceed with clearance — I confirm these pinned versions are intentional
+
+If the user chooses A: for each flagged `uses:` line use the `Edit` tool to replace
+`@vX.Y.Z` or `@vX.Y` with `@vX` (keep major only, remove `.Y.Z` or `.Y`).
+Confirm each edit. Set `GUARD_3_AUTOCORRECTED=true`. Continue to Step 2.
+
+If the user chooses B: set `WORKFLOW_GUARD_3_CLEARED=true`. Continue to Step 2.
+
+---
+
+After all applicable guards are resolved (or skipped as non-applicable), continue to Step 2.
 
 ---
 
@@ -668,3 +813,8 @@ Print a concise summary:
   - If `AGENTS.md` explicitly requires `make gitflow/version/file` before a PR, do it even when the repo is not a Terraform template.
   - Use `IS_TEMPLATE` only as a fallback signal; it must not override explicit repo-local policy.
 - **GitHubFlow semver note**: some repos intentionally map `+semver: breaking` to MINOR. Always trust the repo's actual `major-version-bump-message` / `minor-version-bump-message` config over generic assumptions.
+- **Workflow Safety Guard (Step 1.5) is mandatory and never skipped** when workflow files appear in the diff. It is the primary mechanism that prevents AI agents from silently modifying workflows in implementation repos or introducing bad version pins in templates. Any bypass requires explicit user clearance via `AskUserQuestion`.
+- **Implementation repos must not modify workflow files — hard block, no bypass.** If `.github/workflows/*.yml` or `.github/workflows/*.yaml` files appear in the diff for an `IS_TEMPLATE=false` repo, Guard 1 fires unconditionally, reverts the files immediately, and does not offer a "proceed anyway" path. Workflow changes in implementation repos must go through the upstream template repository and be synced down.
+- **Template repos: blueprints/bp actions must use `@vX.Y` pins.** `uses:` entries referencing `cloudopsworks/blueprints` or `./bp` must carry exactly a major.minor version tag (e.g. `@v5.10`). Full three-part semver (`@v5.10.3`) is a Guard 2 violation regardless of which branch is active.
+- **Template repos: all other external actions must use `@vX` (major-only) pins.** Any `uses:` entry not in the `cloudopsworks/blueprints` / `./bp` namespace must carry only a major version tag (e.g. `@v4`). `@v4.1` or `@v4.1.2` are Guard 3 violations.
+- **User clearance on any guard is final for that session.** Once a guard is cleared with option B, do not re-fire it for the same workflow files in the same release run. However, if new workflow files appear (e.g. the user adds more), re-evaluate all applicable guards for the new files.
