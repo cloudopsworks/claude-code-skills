@@ -158,10 +158,63 @@ If unstaged or uncommitted changes are present, they must be turned into a fresh
 
 ## Step 1.5: Workflow Safety Guard
 
-Run immediately after Step 1. Inspect every GitHub Actions workflow file in the pending
-diff and enforce repository-type policies before any branch, commit, or push action
-proceeds. Violations **always** result in a STOP with `AskUserQuestion` — never
-auto-fix or silently skip a guard without explicit user clearance.
+Run immediately after Step 1. Enforce repository-type policies before any branch,
+commit, or push action proceeds. Violations **always** result in a STOP with
+`AskUserQuestion` — never auto-fix or silently skip a guard without explicit user
+clearance.
+
+---
+
+### Guard 4 — Implementation repository: `_VERSION` file protection
+
+**Applies when:** `IS_TEMPLATE=false`.
+
+**This guard runs unconditionally** — it is not gated on workflow file changes.
+The `.cloudopsworks/_VERSION` and `.github/_VERSION` files are owned by the
+source/template repository and must never be committed, staged, or released from
+an implementation repository under any circumstance.
+
+```bash
+VERSION_IN_DIFF=$(git diff HEAD --name-only 2>/dev/null \
+  | grep -E '(\.cloudopsworks/_VERSION|\.github/_VERSION)' || true)
+VERSION_UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null \
+  | grep -E '(\.cloudopsworks/_VERSION|\.github/_VERSION)' || true)
+ALL_VERSION_FILES=$(printf '%s\n%s' "$VERSION_IN_DIFF" "$VERSION_UNTRACKED" \
+  | grep -v '^$' | sort -u || true)
+echo "VERSION_FILES_IN_DIFF: $ALL_VERSION_FILES"
+```
+
+**If `IS_TEMPLATE=true` OR `ALL_VERSION_FILES` is empty — skip Guard 4 and continue.**
+
+If `IS_TEMPLATE=false` AND `ALL_VERSION_FILES` is non-empty, **STOP.** This guard is a
+hard block. Immediately revert the `_VERSION` file(s) without asking:
+
+```bash
+for vf in $ALL_VERSION_FILES; do
+  git checkout HEAD -- "$vf" 2>/dev/null || git rm --cached "$vf" 2>/dev/null || true
+done
+```
+
+Then use `AskUserQuestion` to inform the user:
+
+State:
+- The project slug and current branch.
+- That this is an **implementation repository** — `_VERSION` files are managed by the
+  upstream template/source repository and have been automatically reverted.
+- The list of files that were reverted.
+- That version file updates must originate from the template repository's release
+  workflow, not from direct edits in an implementation repository.
+
+Options:
+- A) Continue the release without the `_VERSION` change (file has been reverted)
+- B) Abort the release — this repository should not be released this way
+
+If the user chooses A: continue to the workflow file checks below.
+If the user chooses B: **STOP** the entire release workflow. Do not proceed.
+
+---
+
+Now detect workflow file changes for Guards 1–3:
 
 ```bash
 CHANGED_WORKFLOWS=$(git diff HEAD --name-only 2>/dev/null \
@@ -174,7 +227,7 @@ echo "CHANGED_WORKFLOWS:"
 echo "$ALL_CHANGED_WORKFLOWS"
 ```
 
-**If `ALL_CHANGED_WORKFLOWS` is empty — skip this step entirely and continue to Step 2.**
+**If `ALL_CHANGED_WORKFLOWS` is empty — skip Guards 1–3 and continue to Step 2.**
 
 ---
 
@@ -386,7 +439,9 @@ git branch --show-current
 ## Step 4: Stage and Commit
 
 Stage only the changed files relevant to this release. Do not stage unrelated files,
-`.env`, credentials, or generated files unless they are `_VERSION` or `_CHANGELOG`.
+`.env`, credentials, or generated files unless they are `_CHANGELOG`, or `_VERSION`
+**only when `IS_TEMPLATE=true`** — never stage `.cloudopsworks/_VERSION` or
+`.github/_VERSION` on implementation repositories (`IS_TEMPLATE=false`).
 
 ```bash
 git add <files>
@@ -452,10 +507,12 @@ a `chore: Version Bump` to the working branch. The target name stays under the s
 `gitflow/...` make namespace even in repositories whose GitVersion model is GitHubFlow.
 
 Decision rule:
-- If `RUN_VERSION_FILE_BEFORE_PR=true` → run this step, even when the repository is a
-  non-Terraform repo such as this skills repository.
-- If `RUN_VERSION_FILE_BEFORE_PR=false` and `IS_TEMPLATE=false` → skip this step.
-- If `RUN_VERSION_FILE_BEFORE_PR=false` and `IS_TEMPLATE=true` → run this step only if
+- **GUARD (hard block, no bypass):** If `IS_TEMPLATE=false` → **skip this step entirely.**
+  The `.cloudopsworks/_VERSION` file must never be written on implementation repositories,
+  regardless of any other flag including `RUN_VERSION_FILE_BEFORE_PR`. Proceed directly
+  to the read-only path below and then continue to Step 7.
+- If `IS_TEMPLATE=true` AND `RUN_VERSION_FILE_BEFORE_PR=true` → run this step.
+- If `IS_TEMPLATE=true` AND `RUN_VERSION_FILE_BEFORE_PR=false` → run this step only if
   the repo has no contrary local release policy.
 
 If skipping, read the current version file (when present) to capture `CURRENT_VERSION`:
@@ -810,9 +867,10 @@ Print a concise summary:
   - Flow detection controls branch choice and semver interpretation, **not** the shared `make gitflow/...` target names.
 - **Repo-local release policy overrides generic heuristics** (Step 0 / Steps 6, 12-14):
   - If `AGENTS.md` says GitHub Actions handle releases, set `PUBLISH_MODE=ci` and skip local release creation.
-  - If `AGENTS.md` explicitly requires `make gitflow/version/file` before a PR, do it even when the repo is not a Terraform template.
-  - Use `IS_TEMPLATE` only as a fallback signal; it must not override explicit repo-local policy.
+  - If `AGENTS.md` explicitly requires `make gitflow/version/file` before a PR, do it only when `IS_TEMPLATE=true`. **Exception:** `_VERSION` write protection is an absolute hard block — `IS_TEMPLATE=false` repos must never run `make gitflow/version/file` regardless of what `AGENTS.md` says.
+  - Use `IS_TEMPLATE` only as a fallback signal for publish/branching heuristics; it does **not** override explicit repo-local policy — except for `_VERSION` write protection, which is always absolute.
 - **GitHubFlow semver note**: some repos intentionally map `+semver: breaking` to MINOR. Always trust the repo's actual `major-version-bump-message` / `minor-version-bump-message` config over generic assumptions.
+- **`_VERSION` write protection (implementation repos — hard block, no bypass):** `.cloudopsworks/_VERSION` and `.github/_VERSION` must never be written, staged, or committed on `IS_TEMPLATE=false` repositories. Step 6 (`make gitflow/version/file`) is unconditionally skipped when `IS_TEMPLATE=false`, even if `RUN_VERSION_FILE_BEFORE_PR=true`. If `_VERSION` already appears in the diff on an implementation repo, Guard 4 in Step 1.5 reverts it immediately. This check runs before any branch, commit, or push action.
 - **Workflow Safety Guard (Step 1.5) is mandatory and never skipped** when workflow files appear in the diff. It is the primary mechanism that prevents AI agents from silently modifying workflows in implementation repos or introducing bad version pins in templates. Any bypass requires explicit user clearance via `AskUserQuestion`.
 - **Implementation repos must not modify workflow files — hard block, no bypass.** If `.github/workflows/*.yml` or `.github/workflows/*.yaml` files appear in the diff for an `IS_TEMPLATE=false` repo, Guard 1 fires unconditionally, reverts the files immediately, and does not offer a "proceed anyway" path. Workflow changes in implementation repos must go through the upstream template repository and be synced down.
 - **Template repos: blueprints/bp actions must use `@vX.Y` pins.** `uses:` entries referencing `cloudopsworks/blueprints` or `./bp` must carry exactly a major.minor version tag (e.g. `@v5.10`). Full three-part semver (`@v5.10.3`) is a Guard 2 violation regardless of which branch is active.
