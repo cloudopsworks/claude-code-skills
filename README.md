@@ -257,4 +257,4 @@ This project is maintained by [Cloud Ops Works LLC][website].
   [share_reddit]: https://reddit.com/submit/?url=https://github.com/cloudopsworks/claude-code-skills
   [share_facebook]: https://facebook.com/sharer/sharer.php?u=https://github.com/cloudopsworks/claude-code-skills
   [share_email]: mailto:?subject=CloudOps+Works+Agent+Skills&body=https://github.com/cloudopsworks/claude-code-skills
-  [beacon]: https://ga-beacon.cloudospworks.co/G-QMZVYYN2VN/cloudopsworks/claude-code-skills?pixel&cs=github&cm=readme&an=claude-code-skills
+  [beacon]: https://ga-beacon.cloudopsworks.co/G-QMZVYYN2VN/cloudopsworks/claude-code-skills?pixel&cs=github&cm=readme&an=claude-code-skills
