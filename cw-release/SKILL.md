@@ -152,6 +152,10 @@ Detect CI requirement from AGENTS.md content:
   pass", "CI required", "do not merge until checks", or when `PUBLISH_MODE=ci`.
 - `CI_REQUIRED=false` when AGENTS.md explicitly says "no CI", "no checks", or the repo has
   no `.github/workflows/` directory.
+- `CI_REQUIRED=false` when `GH_IS_TEMPLATE=true` — GitHub template repositories have
+  Actions disabled by default; checks will never register on feature PRs regardless of
+  what workflows are present in `.github/workflows/`. Do not poll; proceed directly to
+  merge after the PR is created.
 - `CI_REQUIRED=unknown` when AGENTS.md is silent on the topic (default; resolved in Step 8
   via the GitHub API).
 
@@ -904,7 +908,7 @@ Print a concise summary:
 - **`make gitflow/hotfix/start` auto-names the branch** with the bumped patch version. Capture the branch name after running it.
 - **Release "already exists" is normal** — CI workflows often auto-create a release from the tag push. Use `gh release edit` only when `PUBLISH_MODE=local` and you are the release publisher.
 - **Never delete the remote branch when `PRESERVE_REMOTE_BRANCH=true`** — when `PUBLISH_MODE=ci` (e.g. `pr-merge-tagging.yml` or `release-management.yml` is present and active), the remote branch must remain intact until CI completes. Never pass `--delete-branch` to `gh pr merge` and never run `git push origin --delete` in this case. Only delete the local branch. CI is responsible for any remote cleanup it requires.
-- **If `gh pr checks` or `statusCheckRollup` reports no checks** — this is ambiguous: checks may not have registered yet. Always complete Step 8a–8b (60-second poll + CI presence check) before concluding CI is absent. Never interpret "no checks" as "no CI" without evidence.
+- **If `gh pr checks` or `statusCheckRollup` reports no checks** — this is ambiguous: checks may not have registered yet. Always complete Step 8a–8b (60-second poll + CI presence check) before concluding CI is absent. Never interpret "no checks" as "no CI" without evidence. **Exception: when `GH_IS_TEMPLATE=true`, no checks will ever register** — GitHub disables Actions on template repositories by default. Skip the poll entirely; `CI_REQUIRED=false` for all template repos regardless of what workflows exist in `.github/workflows/`.
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
 - **Never use `--no-verify`** on commits or pushes.
