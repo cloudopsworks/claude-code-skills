@@ -1,6 +1,6 @@
 ---
 name: cw-release
-version: 1.3.0
+version: 1.3.1
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow and
   repo-local release policy, stays portable across Claude Code, Codex, and
@@ -144,6 +144,13 @@ Set the following policy flags:
 - `RUN_VERSION_FILE_BEFORE_PR=true` when repo-local instructions explicitly require `make gitflow/version/file` before the PR, or when the repo's maintained version file must be updated on-branch. This flag can only cause a write when `VERSION_FILE_WRITABLE=true`.
 - `PUBLISH_MODE=ci` when repo-local instructions say releases are handled by GitHub Actions **or** when merge-tagging / release-management workflows clearly own tag + publish after merge.
 - `PUBLISH_MODE=local` only when no repo-local CI release owner is detected and the operator is expected to create or edit the tag/release directly.
+
+**Template repository override:** After computing `PUBLISH_MODE` from workflow files, if
+`GH_IS_TEMPLATE=true` → unconditionally override to `PUBLISH_MODE=local`. GitHub
+disables Actions on template repositories; `pr-merge-tagging.yml`,
+`release-management.yml`, and any other workflows will never execute even when present
+in `.github/workflows/`. Tags and GitHub releases must always be created locally for
+template repos — CI will never do it regardless of what workflow files exist.
 
 Capture: `RUN_VERSION_FILE_BEFORE_PR` (`true` / `false`) and `PUBLISH_MODE` (`ci` / `local`). These control Steps 6 and 12-14.
 
@@ -809,6 +816,12 @@ git fetch --tags && git tag --sort=-v:refname | head -3
 ```
 Proceed to Step 13.
 
+> **Note:** `make gitflow/version/publish` guarantees the git tag is pushed to the
+> remote. It does **not** guarantee a GitHub release is created — tronador's publish
+> target behaviour varies by repo. Always proceed through Steps 13–14 to build the
+> changelog and create or update the GitHub release. Step 14 checks whether the release
+> already exists and handles both the create and update cases.
+
 ---
 
 ## Step 13: Build Changelog (Local-Publish Repositories Only)
@@ -908,6 +921,8 @@ Print a concise summary:
 - **`make gitflow/hotfix/start` auto-names the branch** with the bumped patch version. Capture the branch name after running it.
 - **Release "already exists" is normal** — CI workflows often auto-create a release from the tag push. Use `gh release edit` only when `PUBLISH_MODE=local` and you are the release publisher.
 - **Never delete the remote branch when `PRESERVE_REMOTE_BRANCH=true`** — when `PUBLISH_MODE=ci` (e.g. `pr-merge-tagging.yml` or `release-management.yml` is present and active), the remote branch must remain intact until CI completes. Never pass `--delete-branch` to `gh pr merge` and never run `git push origin --delete` in this case. Only delete the local branch. CI is responsible for any remote cleanup it requires.
+- **GitHub template repos always use `PUBLISH_MODE=local`** — when `GH_IS_TEMPLATE=true`, GitHub Actions are disabled and no CI workflow will ever run, even if `pr-merge-tagging.yml` or `release-management.yml` exist in `.github/workflows/`. The `PUBLISH_MODE=ci` detection from workflow file presence is overridden to `PUBLISH_MODE=local` in Step 0. Always run Steps 12–14 (tag + publish + release) for template repos.
+- **`make gitflow/version/publish` only pushes the tag** — it does not create a GitHub release. Always continue to Steps 13–14 after the `make` targets complete to build the changelog and create the release via `gh release create` / `gh release edit`.
 - **If `gh pr checks` or `statusCheckRollup` reports no checks** — this is ambiguous: checks may not have registered yet. Always complete Step 8a–8b (60-second poll + CI presence check) before concluding CI is absent. Never interpret "no checks" as "no CI" without evidence. **Exception: when `GH_IS_TEMPLATE=true`, no checks will ever register** — GitHub disables Actions on template repositories by default. Skip the poll entirely; `CI_REQUIRED=false` for all template repos regardless of what workflows exist in `.github/workflows/`.
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
