@@ -1,10 +1,11 @@
 ---
 name: cw-release
-version: 1.3.1
+version: 1.3.2
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow and
-  repo-local release policy, stays portable across Claude Code, Codex, and
-  OpenCode, and then drives the shared tronador make/gh release path.
+  repo-local release policy, preserves CI-owned post-merge release automation,
+  stays portable across Claude Code, Codex, and OpenCode, and then drives the
+  permitted tronador make/gh release path.
   Use when asked to "release", "ship a fix", "create a release branch",
   "hotfix", "feature branch and PR", or "merge and tag".
 allowed-tools:
@@ -29,6 +30,16 @@ policy detection. Any detected uncommitted changes that are part of the release
 must be captured in a new conventional commit before the workflow continues past
 staging/commit. Never ask for unnecessary confirmation — proceed autonomously
 unless a STOP point is reached.
+
+## Exclusive CI Release Ownership
+
+For implementation repositories, post-merge release automation is an exclusive
+owner. When an active workflow can perform release management — especially a
+GoReleaser path for Go or Rust — the agent must only observe it. Never race,
+supplement, repair, rerun, cancel, tag, publish, edit releases, upload assets, or
+clean branches for that release. A delayed, failed, cancelled, or incomplete
+workflow remains CI-owned and is reported as-is; it never authorizes a local
+fallback.
 
 ---
 
@@ -134,10 +145,23 @@ Capture: `GH_IS_TEMPLATE` (`true` / `false` / `unknown`),
 (`true` / `false`). Do **not** use `IS_TEMPLATE` alone to decide publish
 behavior.
 
-**Detect repo-local release policy** — run:
+**Detect repo-local release policy and CI release ownership** — run:
 ```bash
 sed -n '1,260p' AGENTS.md 2>/dev/null || true
 ls .github/workflows/pr-merge-tagging.yml .github/workflows/release-management.yml 2>/dev/null || true
+
+# Inspect every workflow and release configuration, not only conventionally
+# named release workflows. Implementation repositories often publish from a
+# main-build workflow after the PR merge.
+find .github/workflows -maxdepth 1 -type f \
+  \( -name '*.yml' -o -name '*.yaml' \) -print 2>/dev/null | sort
+grep -RInE \
+  'goreleaser|release-plz|cargo[[:space:]]+(publish|dist)|gh[[:space:]]+release|softprops/action-gh-release|gitflow/version/(tag|publish)|release-management|create[^[:alnum:]]+release|upload[^[:alnum:]]+release' \
+  .github/workflows .cloudopsworks 2>/dev/null || true
+grep -RInE '(^|[[:space:]])goreleaser:[[:space:]]*true([[:space:]]|$)' \
+  .cloudopsworks .github 2>/dev/null || true
+gh workflow list --repo <REPO_SLUG> --all \
+  --json id,name,path,state 2>/dev/null || true
 ```
 
 **Detect version-file maintenance from git history, not from prose.** Documentation can
@@ -165,8 +189,22 @@ Set the following policy flags:
   matched.** Prior releases skipping the bump is a defect in those releases. Never reason
   "the last N releases left it stale, so I will too" — set `RUN_VERSION_FILE_BEFORE_PR=true`
   and let this release self-heal the file. Report the drift to the user.
-- `PUBLISH_MODE=ci` when repo-local instructions say releases are handled by GitHub Actions **or** when merge-tagging / release-management workflows clearly own tag + publish after merge.
-- `PUBLISH_MODE=local` only when no repo-local CI release owner is detected and the operator is expected to create or edit the tag/release directly.
+- Set `CI_RELEASE_OWNER_DETECTED=true` for an implementation repository when any
+  active workflow or repo-local release configuration can tag, publish, create a
+  release, or invoke a release tool after merge. This includes GoReleaser for
+  Go **or Rust**, even when it is invoked indirectly from `main-build.yml`, a
+  reusable workflow, or a CloudOps Works configuration flag rather than from a
+  file named `release-management.yml`.
+- `PUBLISH_MODE=ci` when repo-local instructions say releases are handled by
+  GitHub Actions **or** when `CI_RELEASE_OWNER_DETECTED=true`.
+- Detection is fail-closed for implementation repositories: if an active
+  post-merge build/release workflow or an enabled GoReleaser configuration could
+  own publication, choose `PUBLISH_MODE=ci`. Do not choose local publication
+  merely because a workflow has an unfamiliar name or because the release job
+  has not started yet.
+- `PUBLISH_MODE=local` only when no CI release owner is detected and repository
+  policy or established release mechanics positively assign tag + release
+  publication to the operator.
 
 **Template repository override:** After computing `PUBLISH_MODE` from workflow files, if
 `GH_IS_TEMPLATE=true` → unconditionally override to `PUBLISH_MODE=local`. GitHub
@@ -175,7 +213,10 @@ disables Actions on template repositories; `pr-merge-tagging.yml`,
 in `.github/workflows/`. Tags and GitHub releases must always be created locally for
 template repos — CI will never do it regardless of what workflow files exist.
 
-Capture: `RUN_VERSION_FILE_BEFORE_PR` (`true` / `false`) and `PUBLISH_MODE` (`ci` / `local`). These control Steps 6 and 12-14.
+Capture: `RUN_VERSION_FILE_BEFORE_PR` (`true` / `false`),
+`CI_RELEASE_OWNER_DETECTED` (`true` / `false`), the matching
+`CI_RELEASE_WORKFLOWS`, and `PUBLISH_MODE` (`ci` / `local`). These control the
+post-merge observer gate and Steps 6 and 12-14.
 
 Detect CI requirement from AGENTS.md content:
 - `CI_REQUIRED=true` when AGENTS.md contains phrases like "wait for checks", "checks must
@@ -740,10 +781,133 @@ remote branch is removed.
 
 Verify merge:
 ```bash
-gh pr view <PR_NUMBER> --repo <REPO_SLUG> --json state,mergedAt
+gh pr view <PR_NUMBER> --repo <REPO_SLUG> --json state,mergedAt,mergeCommit
 ```
 
-Confirm `"state":"MERGED"`.
+Confirm `"state":"MERGED"` and capture `MERGE_SHA` from
+`.mergeCommit.oid`.
+
+---
+
+## Step 9.5: Observe CI-Owned Post-Merge Release Automation
+
+This is a mandatory ownership boundary for implementation repositories.
+
+If `GH_IS_TEMPLATE=true` and `PUBLISH_MODE=local`, skip this step and continue
+to Step 10.
+
+For every implementation repository, perform one final read-only ownership
+check after merge and before any local version/tag/release command. Re-run the
+Step 0 release-signal scan and list runs for `MERGE_SHA`. If a matching workflow
+is active, a post-merge run exposes release/publish/GoReleaser jobs, or ownership
+is ambiguous, set `CI_RELEASE_OWNER_DETECTED=true` and
+`PUBLISH_MODE=ci`. This late check prevents a workflow that registered only
+after merge from being mistaken for absence of CI ownership.
+
+Only an implementation repository with positive evidence of local publication
+and no static or running CI release owner may keep `PUBLISH_MODE=local` and skip
+the remainder of this step.
+
+If `PUBLISH_MODE=ci`, immediately enter **release observer mode** after the PR
+merge. From this point through workflow completion, use read-only observation
+only. The release workflow is the sole owner of version calculation, tags,
+artifacts, GoReleaser (Go or Rust), package publication, and GitHub Releases.
+
+Permitted commands in release observer mode:
+
+- `gh run list`
+- `gh run view`
+- `gh run watch --exit-status`
+- `gh pr view`
+- `gh release view` / `gh release list`
+- read-only `git fetch`, `git log`, `git show`, and `git tag --list`
+
+Forbidden commands and actions in release observer mode:
+
+- Do not run `make gitflow/version/file`, `make gitflow/version/tag`,
+  `make gitflow/version/publish`, GoReleaser, Cargo release/publish commands, or
+  any equivalent release command.
+- Do not create, move, force, delete, or push tags.
+- Do not create, edit, publish, delete, or upload assets to a GitHub Release.
+- Do not trigger, rerun, cancel, approve, or dispatch workflows or jobs.
+- Do not push commits, amend version files, repair generated changelogs, or
+  delete local or remote release branches.
+- Do not fall back to local publication when the workflow is delayed, waiting
+  for an environment, fails, is cancelled, or produces no tag/release.
+
+Poll for post-merge workflow registration by the exact merge commit. Ignore PR
+event runs because those belong to the pre-merge gate:
+
+```bash
+COUNT=0
+for i in $(seq 1 12); do
+  COUNT=$(gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+    --json event \
+    --jq '[.[] | select(.event != "pull_request" and .event != "pull_request_target")] | length')
+  [ "$COUNT" -gt 0 ] && break
+  echo "No post-merge runs yet (attempt $i/12). Waiting 10s..."
+  sleep 10
+done
+gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+  --json databaseId,name,workflowName,event,status,conclusion,headSha,url,createdAt \
+  --jq '.[] | select(.event != "pull_request" and .event != "pull_request_target")'
+```
+
+If no post-merge run appears after 120 seconds, **STOP** and report that the
+CI-owned release did not register. Do not tag or publish locally.
+
+Watch every post-merge run associated with `MERGE_SHA`. Re-list after each
+completion because release workflows may start reusable or `workflow_run`
+children only after an earlier build finishes:
+
+```bash
+QUIET_POLLS=0
+while :; do
+  PENDING_IDS=$(gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+    --json databaseId,event,status \
+    --jq '.[] | select(.event != "pull_request" and .event != "pull_request_target" and .status != "completed") | .databaseId')
+  for run_id in $PENDING_IDS; do
+    gh run watch "$run_id" --repo <REPO_SLUG> --exit-status || true
+  done
+  ACTIVE=$(gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+    --json event,status \
+    --jq '[.[] | select(.event != "pull_request" and .event != "pull_request_target" and .status != "completed")] | length')
+  CURRENT_IDS=$(gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+    --json databaseId,event \
+    --jq '[.[] | select(.event != "pull_request" and .event != "pull_request_target") | .databaseId] | sort | join(",")')
+  if [ "$ACTIVE" -ne 0 ]; then
+    QUIET_POLLS=0
+    continue
+  fi
+  sleep 15
+  REFRESHED_ACTIVE=$(gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+    --json event,status \
+    --jq '[.[] | select(.event != "pull_request" and .event != "pull_request_target" and .status != "completed")] | length')
+  REFRESHED_IDS=$(gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+    --json databaseId,event \
+    --jq '[.[] | select(.event != "pull_request" and .event != "pull_request_target") | .databaseId] | sort | join(",")')
+  if [ "$REFRESHED_ACTIVE" -eq 0 ] && [ "$REFRESHED_IDS" = "$CURRENT_IDS" ]; then
+    QUIET_POLLS=$((QUIET_POLLS + 1))
+  else
+    QUIET_POLLS=0
+  fi
+  [ "$QUIET_POLLS" -ge 4 ] && break
+done
+gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+  --json databaseId,name,workflowName,event,status,conclusion,url \
+  --jq '.[] | select(.event != "pull_request" and .event != "pull_request_target")'
+BAD_COUNT=$(gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+  --json event,conclusion \
+  --jq '[.[] | select(.event != "pull_request" and .event != "pull_request_target" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length')
+```
+
+If any observed run concludes as `failure`, `cancelled`, `timed_out`,
+`action_required`, or another non-success terminal state, **STOP** and report
+the run URL and conclusion. Do not rerun it or perform any release mutation.
+
+When all post-merge runs succeed or are legitimately skipped, inspect the
+resulting tag/release read-only and continue to Step 10. CI remains the release
+owner even after its run completes; Steps 12-14 stay forbidden.
 
 ---
 
@@ -763,28 +927,22 @@ Confirm the merge commit appears in the log.
 
 Choose the cleanup path from `PURGE_RELEASE_BRANCH` **and** `PRESERVE_REMOTE_BRANCH`:
 
+- If `PUBLISH_MODE=ci`: skip branch cleanup entirely. Keep both local and remote
+  branches untouched. A CI-owned post-merge release may retain branch context
+  for attribution, delayed jobs, GoReleaser, or follow-up automation. Observers
+  never decide when that context is safe to remove.
 - If `PURGE_RELEASE_BRANCH=true` and `PRESERVE_REMOTE_BRANCH=false`: purge the merged `feature/*` branch from both remote and local automatically. Do **not** ask for confirmation.
-- If `PURGE_RELEASE_BRANCH=true` and `PRESERVE_REMOTE_BRANCH=true`: delete the local branch only. Never touch the remote — CI owns cleanup.
 - If `PURGE_RELEASE_BRANCH=false`: keep the previous conservative behavior — only offer optional local deletion for `feature/*` branches, and do not force remote deletion.
 
-### Template-style repositories (`PURGE_RELEASE_BRANCH=true`)
+### Template-style repositories (`PUBLISH_MODE=local` and `PURGE_RELEASE_BRANCH=true`)
 
 **First, check `PRESERVE_REMOTE_BRANCH`** before any deletion.
 
-#### When `PRESERVE_REMOTE_BRANCH=true` (CI workflows are active)
+#### When `PRESERVE_REMOTE_BRANCH=true` (CI owns release automation)
 
-Remote branch deletion is forbidden. Only delete the local branch:
-
-```bash
-if git show-ref --verify --quiet "refs/heads/<BRANCH>"; then
-  git branch -D "<BRANCH>"
-fi
-```
-
-The remote branch will be cleaned up by CI (e.g. `pr-merge-tagging.yml`) after it
-completes. Do not delete it manually.
-
-Success condition: `git branch --list "<BRANCH>"` returns nothing (local only).
+Do not delete either branch. Do not pass a branch deletion flag during merge,
+and do not run local or remote deletion commands after merge. Report the branch
+as retained for CI ownership.
 
 #### When `PRESERVE_REMOTE_BRANCH=false` (no active CI workflows)
 
@@ -810,7 +968,7 @@ Success condition:
 - `git branch --list "<BRANCH>"` returns nothing
 - `git branch -r --list "origin/<BRANCH>"` returns nothing
 
-### Non-template repositories (`PURGE_RELEASE_BRANCH=false`)
+### Non-template repositories (`PUBLISH_MODE=local` and `PURGE_RELEASE_BRANCH=false`)
 
 Only delete if branch type is `feature` (hotfix branches are tracked by tronador).
 Ask user: "Delete local branch `<BRANCH>`?"
@@ -829,7 +987,10 @@ shared target names remain `make gitflow/version/tag gitflow/version/publish`
 even when the repository's GitVersion branching model is GitHubFlow.
 
 Decision rule:
-- If `PUBLISH_MODE=ci` → skip this entire step and proceed to Step 15. CI owns tag + release after merge.
+- If `PUBLISH_MODE=ci` → skip this entire step and proceed to Step 15. CI owns
+  tag + release after merge. This is an absolute ownership boundary, not a race:
+  never run local tagging/publication even if CI is slow, fails, is cancelled,
+  waits for approval, or has not produced a tag or release yet.
 - If `PUBLISH_MODE=local` → run both targets below.
 
 If `PUBLISH_MODE=local`, run:
@@ -847,18 +1008,21 @@ git tag --sort=-v:refname | head -3
 **STOP** if tagging fails with "must be in the latest commit of the branch". This means
 remote is ahead — run `git pull origin <MAIN_BRANCH>` and retry.
 
-**If `make` exits non-zero with "already exists"** — the CI beat us to it (tag pushed by
-the release workflow). This is normal when CI also owns release tagging — verify with:
+**If `make` exits non-zero with "already exists"** in a positively identified
+local-publish repository, stop mutating and verify read-only whether an external
+publisher created the tag:
 ```bash
 git fetch --tags && git tag --sort=-v:refname | head -3
 ```
-Proceed to Step 13.
+Do not race that publisher or overwrite its output. Reclassify the repository as
+`PUBLISH_MODE=ci`, enter release observer mode, and skip Steps 13-14.
 
 > **Note:** `make gitflow/version/publish` guarantees the git tag is pushed to the
 > remote. It does **not** guarantee a GitHub release is created — tronador's publish
 > target behaviour varies by repo. Always proceed through Steps 13–14 to build the
-> changelog and create or update the GitHub release. Step 14 checks whether the release
-> already exists and handles both the create and update cases.
+> changelog and create the GitHub release. Step 14 checks for an existing release
+> and fails closed to read-only observer mode rather than editing another publisher's
+> output.
 
 ---
 
@@ -907,9 +1071,9 @@ Where `<commit-url>` = `https://github.com/<REPO_SLUG>/commit/<full-sha>`.
 
 ---
 
-## Step 14: Create or Update GitHub Release (Local-Publish Repositories Only)
+## Step 14: Create GitHub Release (Local-Publish Repositories Only)
 
-First check if the release already exists (CI may have auto-created it):
+First check if the release already exists:
 
 ```bash
 gh release view <NEW_TAG> --repo <REPO_SLUG> 2>/dev/null && echo "EXISTS" || echo "NOT_FOUND"
@@ -923,13 +1087,11 @@ gh release create <NEW_TAG> \
   --notes "<changelog from Step 13>"
 ```
 
-**If EXISTS:** update it (CI may have written a stub):
-```bash
-gh release edit <NEW_TAG> \
-  --repo <REPO_SLUG> \
-  --title "<NEW_TAG> - <Short Description>" \
-  --notes "<changelog from Step 13>"
-```
+**If EXISTS:** do not edit it. An existing release is evidence that another
+publisher may own the release even if Step 0 missed it. Reclassify as
+`PUBLISH_MODE=ci`, inspect the release and matching workflow runs read-only,
+and report the ownership conflict. Never overwrite a CI-created release body or
+assets.
 
 Output the release URL.
 
@@ -937,8 +1099,8 @@ Output the release URL.
 
 ## Step 15: Verify Invariants and Summarize
 
-First verify the version-file invariant. Skip only when the repo reported `NO_VERSION_FILE`
-or `VERSION_FILE_WRITABLE=false`:
+For `PUBLISH_MODE=local`, verify the version-file invariant. Skip only when the
+repo reported `NO_VERSION_FILE` or `VERSION_FILE_WRITABLE=false`:
 
 ```bash
 git fetch origin --tags --prune
@@ -946,10 +1108,25 @@ VERSION_PATH=$(ls .cloudopsworks/_VERSION .github/_VERSION 2>/dev/null | head -1
 printf 'file=%s tag=%s\n' "$(cat "$VERSION_PATH")" "$(git tag --sort=-v:refname | head -1)"
 ```
 
-For `PUBLISH_MODE=local`, the two values must be equal. For `PUBLISH_MODE=ci`, the file must
-equal the version CI is about to tag. If they disagree, **say so explicitly in the summary** —
-do not report a clean release over a broken invariant. Never hand-edit the file to force
-agreement; the correct repair is a follow-up release that runs Step 6.
+The two values must be equal. If they disagree, **say so explicitly in the
+summary** — do not report a clean release over a broken invariant. Never
+hand-edit the file to force agreement; the correct repair is a follow-up release
+that runs Step 6.
+
+For `PUBLISH_MODE=ci`, verification stays read-only and reports observed facts
+rather than enforcing a local publisher's invariant:
+
+```bash
+git fetch origin --tags --prune
+gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
+  --json databaseId,name,workflowName,event,status,conclusion,url
+gh release list --repo <REPO_SLUG> --limit 10
+git tag --sort=-v:refname | head -3
+```
+
+Do not create or repair anything when expected CI output is absent. Report the
+workflow state, observed tag/release (or `pending` / `missing`), and workflow
+URLs. A failed or incomplete CI-owned release is not a local-release fallback.
 
 Then print a concise summary:
 
@@ -958,9 +1135,9 @@ Then print a concise summary:
 
 - Branch:   <BRANCH>
 - PR:       #<PR_NUMBER>  (<URL>)
-- Version:  <PREV_VERSION> → <NEW_TAG or pending CI tag>
-- _VERSION: <file value>  (matches tag / MISMATCH)
-- Publish:  <release URL or "GitHub Actions after merge">
+- Version:  <PREV_VERSION> → <NEW_TAG or pending/missing CI tag>
+- _VERSION: <file value>  (matches tag / MISMATCH / protected / CI-owned)
+- Publish:  <release URL or CI workflow state + URL>
 ```
 
 ---
@@ -972,10 +1149,22 @@ Then print a concise summary:
 - **`+semver:` annotation must be in the body of the merge commit**, not just the title, for GitVersion to pick it up.
 - **`make gitflow/version/file` may create its own version-bump commit.** After it runs, inspect `git status` / `git log` before adding more commits.
 - **`make gitflow/hotfix/start` auto-names the branch** with the bumped patch version. Capture the branch name after running it.
-- **Release "already exists" is normal** — CI workflows often auto-create a release from the tag push. Use `gh release edit` only when `PUBLISH_MODE=local` and you are the release publisher.
-- **Never delete the remote branch when `PRESERVE_REMOTE_BRANCH=true`** — when `PUBLISH_MODE=ci` (e.g. `pr-merge-tagging.yml` or `release-management.yml` is present and active), the remote branch must remain intact until CI completes. Never pass `--delete-branch` to `gh pr merge` and never run `git push origin --delete` in this case. Only delete the local branch. CI is responsible for any remote cleanup it requires.
+- **CI release ownership is exclusive and permanent for the run.** In an
+  implementation repository, once an active post-merge release owner is
+  detected, the agent only observes it. Never tag, publish, edit a release,
+  dispatch/rerun/cancel a workflow, change a version file, or clean up release
+  branches as a fallback — before, during, or after that workflow.
+- **An existing release is an ownership signal, not an edit target.** If a
+  release already exists during a supposedly local publish, stop mutation,
+  reclassify to CI-owned observation, and never edit its notes or assets.
+- **Never delete either branch when `PRESERVE_REMOTE_BRANCH=true`.** When
+  `PUBLISH_MODE=ci`, keep both local and remote branches untouched. Never pass
+  `--delete-branch` to `gh pr merge`, run `git push origin --delete`, or delete
+  the local branch. CI or a human owner decides later cleanup.
 - **GitHub template repos always use `PUBLISH_MODE=local`** — when `GH_IS_TEMPLATE=true`, GitHub Actions are disabled and no CI workflow will ever run, even if `pr-merge-tagging.yml` or `release-management.yml` exist in `.github/workflows/`. The `PUBLISH_MODE=ci` detection from workflow file presence is overridden to `PUBLISH_MODE=local` in Step 0. Always run Steps 12–14 (tag + publish + release) for template repos.
-- **`make gitflow/version/publish` only pushes the tag** — it does not create a GitHub release. Always continue to Steps 13–14 after the `make` targets complete to build the changelog and create the release via `gh release create` / `gh release edit`.
+- **`make gitflow/version/publish` only pushes the tag** — it does not create a
+  GitHub release. In a positively identified local-publish repository, continue
+  to Steps 13–14 and use `gh release create` only when no release exists.
 - **If `gh pr checks` or `statusCheckRollup` reports no checks** — this is ambiguous: checks may not have registered yet. Always complete Step 8a–8b (60-second poll + CI presence check) before concluding CI is absent. Never interpret "no checks" as "no CI" without evidence. **Exception: when `GH_IS_TEMPLATE=true`, no checks will ever register** — GitHub disables Actions on template repositories by default. Skip the poll entirely; `CI_REQUIRED=false` for all template repos regardless of what workflows exist in `.github/workflows/`.
 - **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
 - **Stale hotfix branches**: if `make gitflow/hotfix/start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
