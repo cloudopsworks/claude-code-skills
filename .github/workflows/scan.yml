@@ -6,7 +6,7 @@
 #       WebSite: https://cloudops.works
 #     Distributed Under Apache v2.0 License
 #
-name: Skills module scan
+name: Terraform Module Scan
 on:
   workflow_dispatch: {}
   pull_request: {}
@@ -95,6 +95,6 @@ jobs:
         continue-on-error: true
         with:
           source_path: ${{ steps.co.outputs.source_path }}
-          semgrep_token: ${{ secrets.semgrep_token }}
-          bot_user: ${{ inputs.bot_user }}
-          token: ${{ secrets.token }}
+          semgrep_token: ${{ secrets.SEMGREP_TOKEN }}
+          bot_user: ${{ vars.BOT_USER }}
+          token: ${{ secrets.BOT_TOKEN }}
