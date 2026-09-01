@@ -140,8 +140,31 @@ sed -n '1,260p' AGENTS.md 2>/dev/null || true
 ls .github/workflows/pr-merge-tagging.yml .github/workflows/release-management.yml 2>/dev/null || true
 ```
 
+**Detect version-file maintenance from git history, not from prose.** Documentation can
+omit a step the repository has in fact always performed. Ask the history whether this repo
+maintains its version file:
+
+```bash
+VERSION_PATH=$(ls .cloudopsworks/_VERSION .github/_VERSION 2>/dev/null | head -1)
+if [ -n "$VERSION_PATH" ]; then
+  echo "VERSION_PATH=$VERSION_PATH"
+  echo "BUMP_COMMITS=$(git log --oneline -- "$VERSION_PATH" | wc -l | tr -d ' ')"
+  printf 'FILE_VALUE=%s\nLATEST_TAG=%s\n' \
+    "$(cat "$VERSION_PATH")" "$(git tag --sort=-v:refname | head -1)"
+else
+  echo "NO_VERSION_FILE"
+fi
+```
+
 Set the following policy flags:
-- `RUN_VERSION_FILE_BEFORE_PR=true` when repo-local instructions explicitly require `make gitflow/version/file` before the PR, or when the repo's maintained version file must be updated on-branch. This flag can only cause a write when `VERSION_FILE_WRITABLE=true`.
+- `RUN_VERSION_FILE_BEFORE_PR=true` when repo-local instructions explicitly require
+  `make gitflow/version/file` before the PR, **or** when `BUMP_COMMITS` is greater than zero
+  (the repository has a history of bumping its version file, which is authoritative evidence
+  that it maintains one). This flag can only cause a write when `VERSION_FILE_WRITABLE=true`.
+- A version file that trails `LATEST_TAG` is **drift to be repaired, never policy to be
+  matched.** Prior releases skipping the bump is a defect in those releases. Never reason
+  "the last N releases left it stale, so I will too" — set `RUN_VERSION_FILE_BEFORE_PR=true`
+  and let this release self-heal the file. Report the drift to the user.
 - `PUBLISH_MODE=ci` when repo-local instructions say releases are handled by GitHub Actions **or** when merge-tagging / release-management workflows clearly own tag + publish after merge.
 - `PUBLISH_MODE=local` only when no repo-local CI release owner is detected and the operator is expected to create or edit the tag/release directly.
 
@@ -564,8 +587,23 @@ Decision rule:
   update its version file. Proceed directly to the read-only path below and then
   continue to Step 7.
 - If `VERSION_FILE_WRITABLE=true` AND `RUN_VERSION_FILE_BEFORE_PR=true` → run this step.
-- If `VERSION_FILE_WRITABLE=true` AND `RUN_VERSION_FILE_BEFORE_PR=false` → run this step
-  only if the repo has no contrary local release policy.
+- If `VERSION_FILE_WRITABLE=true` AND `RUN_VERSION_FILE_BEFORE_PR=false` → **run this step
+  anyway** unless the repository has no version file at all (`NO_VERSION_FILE`) or its
+  `AGENTS.md` contains an explicit written statement that the version file is not bumped on
+  release. Running is the default when the file exists and is writable; skipping requires
+  positive evidence, not merely the absence of an instruction to run.
+
+**Never infer "skip" from any of the following** — each is a symptom of the bug this step
+exists to prevent, not a policy signal:
+- The version file is stale relative to the latest tag.
+- Recent releases did not bump it.
+- `AGENTS.md` does not mention `gitflow/version/file` in its numbered workflow.
+
+When the file exists, is writable, and this branch will produce a release, the bump runs.
+
+**Ordering:** run this step after Step 5 (branch pushed) and before any pre-release tag, so
+the `chore: Version Bump` commit is covered by that tag and the release gate's
+"no untested commits after the last tag" check stays satisfiable.
 
 If skipping, read the current version file (when present) to capture `CURRENT_VERSION`:
 ```bash
@@ -897,9 +935,23 @@ Output the release URL.
 
 ---
 
-## Step 15: Final Summary
+## Step 15: Verify Invariants and Summarize
 
-Print a concise summary:
+First verify the version-file invariant. Skip only when the repo reported `NO_VERSION_FILE`
+or `VERSION_FILE_WRITABLE=false`:
+
+```bash
+git fetch origin --tags --prune
+VERSION_PATH=$(ls .cloudopsworks/_VERSION .github/_VERSION 2>/dev/null | head -1)
+printf 'file=%s tag=%s\n' "$(cat "$VERSION_PATH")" "$(git tag --sort=-v:refname | head -1)"
+```
+
+For `PUBLISH_MODE=local`, the two values must be equal. For `PUBLISH_MODE=ci`, the file must
+equal the version CI is about to tag. If they disagree, **say so explicitly in the summary** —
+do not report a clean release over a broken invariant. Never hand-edit the file to force
+agreement; the correct repair is a follow-up release that runs Step 6.
+
+Then print a concise summary:
 
 ```
 ## Release Complete
@@ -907,6 +959,7 @@ Print a concise summary:
 - Branch:   <BRANCH>
 - PR:       #<PR_NUMBER>  (<URL>)
 - Version:  <PREV_VERSION> → <NEW_TAG or pending CI tag>
+- _VERSION: <file value>  (matches tag / MISMATCH)
 - Publish:  <release URL or "GitHub Actions after merge">
 ```
 
@@ -944,6 +997,7 @@ Print a concise summary:
   - GitHub `isTemplate=true` makes `_VERSION` writable by default for every CloudOps Works managed template family. GitHub `isTemplate=false` or unknown keeps `_VERSION` protected unless local `AGENTS.md` explicitly directs different behavior.
   - Use `IS_TEMPLATE` only for template workflow policy and branch-cleanup heuristics; it does **not** override explicit repo-local publish or version-file policy.
 - **GitHubFlow semver note**: some repos intentionally map `+semver: breaking` to MINOR. Always trust the repo's actual `major-version-bump-message` / `minor-version-bump-message` config over generic assumptions.
+- **A stale `_VERSION` is a defect, never a convention.** When the version file trails the latest tag, prior releases skipped Step 6. Repair it by running Step 6 on this release — never by hand-editing the file, and never by "staying consistent" with the releases that skipped it. Detect version-file maintenance from `git log -- <version-path>`, not from whether `AGENTS.md` happens to document the step.
 - **`_VERSION` write protection (default for non-template repos):** `.cloudopsworks/_VERSION` and `.github/_VERSION` must never be written, staged, or committed when `VERSION_FILE_WRITABLE=false`. Step 6 (`make gitflow/version/file`) is unconditionally skipped in that state, even if `RUN_VERSION_FILE_BEFORE_PR=true`. If `_VERSION` already appears in the diff while protected, Guard 4 in Step 1.5 reverts it immediately. This check runs before any branch, commit, or push action.
 - **Fetch tags before version calculation:** Run `git fetch origin --tags --prune` before any GitVersion-based `_VERSION`, tag, or publish calculation. Do not continue if the computed `_VERSION` is lower than the latest fetched remote tag.
 - **Workflow Safety Guard (Step 1.5) is mandatory and never skipped** when workflow files appear in the diff. It is the primary mechanism that prevents AI agents from silently modifying workflows in non-template repos or introducing bad version pins in templates. Any bypass requires explicit user clearance via `AskUserQuestion`.
