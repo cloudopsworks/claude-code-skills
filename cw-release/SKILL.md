@@ -96,14 +96,18 @@ Capture: `RELEASE_FLOW` (`gitflow` / `githubflow`).
 **Interpret bundled examples carefully:**
 - `cw-release/gitflow/gitversion.yaml` = GitFlow reference where `+semver: breaking` implies MAJOR.
 - `cw-release/githubflow/gitversion.yaml` = generic GitHubFlow reference where `+semver: breaking` also implies MAJOR.
-- `cw-release/githubflow-cloudopsworks-spec/gitversion.yaml` = CloudOps Works GitHubFlow policy, matching this repository, where `+semver: breaking` implies MINOR and `+semver: major` is required for a MAJOR bump.
-- When a repository already has `.cloudopsworks/gitversion.yaml`, trust that file over bundled examples.
+- `cw-release/githubflow-cloudopsworks-spec/gitversion.yaml` = a CloudOps Works GitHubFlow reference in which `+semver: breaking` implies MINOR. It is a sample, **not** a description of any live repository — real repositories have diverged from it (for example `terraform-module-template` maps `breaking` to MAJOR and defines a `hotfix:` branch the sample omits).
+- When a repository has `.cloudopsworks/gitversion.yaml`, that file is authoritative. **Never state what a repository's annotations do from a bundled sample** — read the regexes:
+  ```bash
+  grep -nE 'version-bump-message' .cloudopsworks/gitversion.yaml
+  ```
+  Resolve `SEMVER_ANNOTATION` against those patterns before using it.
 
 **Detect repository template and version-file authority** — run:
 ```bash
 ls .cloudopsworks/_VERSION .github/_VERSION 2>/dev/null
 gh repo view <REPO_SLUG> --json isTemplate 2>/dev/null || echo '{"isTemplate":null}'
-sed -n '1,260p' AGENTS.md 2>/dev/null || true
+cat AGENTS.md 2>/dev/null || true
 ```
 
 Set `GH_IS_TEMPLATE` from GitHub:
@@ -115,23 +119,21 @@ Do **not** infer template status from technology-specific marker files or the
 absence of those files. CloudOps Works manages many template families, and the
 GitHub template flag is the default authority.
 
-Set `LOCAL_VERSION_FILE_POLICY` from `AGENTS.md`:
-- `managed` when repo-local instructions explicitly require or allow updating
-  `.cloudopsworks/_VERSION` / `.github/_VERSION`, require
-  `make gitflow/version/file` before the PR, or otherwise state that this
-  repository owns its version file on the working branch.
-- `protected` when repo-local instructions explicitly say not to write, stage,
-  commit, or release `_VERSION` files from this repository.
-- `unspecified` when `AGENTS.md` is silent.
+Set `VERSION_FILE_WRITABLE` from GitHub alone:
+- `true` **only** when `GH_IS_TEMPLATE=true`.
+- `false` in every other case, including `unknown`.
 
-Set `VERSION_FILE_WRITABLE`:
-- `false` when `LOCAL_VERSION_FILE_POLICY=protected`.
-- `true` when `GH_IS_TEMPLATE=true`.
-- `true` when `LOCAL_VERSION_FILE_POLICY=managed` (the explicit local-policy
-  exception for non-template repositories).
-- `false` otherwise. When GitHub says `isTemplate=false`, or when GitHub status
-  is unknown, `_VERSION` is protected unless `AGENTS.md` explicitly directs
-  different behavior.
+**`_VERSION` authority is never derived from `AGENTS.md` prose.** The template's `AGENTS.md`
+is hard-copied into every repository generated from it (`tronador/modules/repos/Makefile`:
+`cp -pf .template/AGENTS.md AGENTS.md`, with `AGENTSMD_OVERRIDE := 1`), so any sentence in it
+that reads as "this repository owns its version file" is byte-identical in every
+implementation repository and is not evidence of authority. There is no local-policy
+exception and no prose override.
+
+In an implementation repository `_VERSION` is the **template generation marker**: written by
+`tronador repos upgrade`, which parses the MAJOR and MINOR digits back out of it to resolve
+which template tag to pull. Writing the module's own version there makes the next upgrade
+resolve the wrong template series.
 
 Set `IS_TEMPLATE` for template workflow policy:
 - `true` when `GH_IS_TEMPLATE=true`.
@@ -140,14 +142,13 @@ Set `IS_TEMPLATE` for template workflow policy:
 - `false` otherwise. Do not use legacy implementation heuristics.
 
 Capture: `GH_IS_TEMPLATE` (`true` / `false` / `unknown`),
-`LOCAL_VERSION_FILE_POLICY` (`managed` / `protected` / `unspecified`),
 `VERSION_FILE_WRITABLE` (`true` / `false`), and `IS_TEMPLATE`
 (`true` / `false`). Do **not** use `IS_TEMPLATE` alone to decide publish
 behavior.
 
 **Detect repo-local release policy and CI release ownership** — run:
 ```bash
-sed -n '1,260p' AGENTS.md 2>/dev/null || true
+cat AGENTS.md 2>/dev/null || true
 ls .github/workflows/pr-merge-tagging.yml .github/workflows/release-management.yml 2>/dev/null || true
 
 # Inspect every workflow and release configuration, not only conventionally
@@ -181,14 +182,20 @@ fi
 ```
 
 Set the following policy flags:
-- `RUN_VERSION_FILE_BEFORE_PR=true` when repo-local instructions explicitly require
-  `make gitflow/version/file` before the PR, **or** when `BUMP_COMMITS` is greater than zero
-  (the repository has a history of bumping its version file, which is authoritative evidence
-  that it maintains one). This flag can only cause a write when `VERSION_FILE_WRITABLE=true`.
-- A version file that trails `LATEST_TAG` is **drift to be repaired, never policy to be
-  matched.** Prior releases skipping the bump is a defect in those releases. Never reason
-  "the last N releases left it stale, so I will too" — set `RUN_VERSION_FILE_BEFORE_PR=true`
-  and let this release self-heal the file. Report the drift to the user.
+- `RUN_VERSION_FILE_BEFORE_PR=true` when `VERSION_FILE_WRITABLE=true` and `BUMP_COMMITS` is
+  greater than zero. Count only `chore: Version Bump` commits — a
+  `chore: Upgrade repository from template, version: …` commit is `tronador repos upgrade`
+  writing the template generation marker, **not** a release bump, and every implementation
+  repository has those. This flag can only cause a write when `VERSION_FILE_WRITABLE=true`.
+- **When `VERSION_FILE_WRITABLE=true` (template repository):** a version file that trails
+  `LATEST_TAG` is **drift to be repaired, never policy to be matched.** Prior releases
+  skipping the bump is a defect in those releases. Never reason "the last N releases left it
+  stale, so I will too" — set `RUN_VERSION_FILE_BEFORE_PR=true` and let this release
+  self-heal the file. Report the drift to the user.
+- **When `VERSION_FILE_WRITABLE=false` (every implementation repository):** a version file
+  that trails `LATEST_TAG` is **correct and expected** — it names the template generation,
+  not this module's version. It is not drift. Do not repair it, do not report it as a
+  defect, and do not set `RUN_VERSION_FILE_BEFORE_PR`.
 - Set `CI_RELEASE_OWNER_DETECTED=true` for an implementation repository when any
   active workflow or repo-local release configuration can tag, publish, create a
   release, or invoke a release tool after merge. This includes GoReleaser for
@@ -276,11 +283,10 @@ clearance.
 **Applies when:** `VERSION_FILE_WRITABLE=false`.
 
 **This guard runs unconditionally** — it is not gated on workflow file changes.
-The `.cloudopsworks/_VERSION` and `.github/_VERSION` files are writable only for
-GitHub template repositories (`GH_IS_TEMPLATE=true`) or for repositories whose
-local `AGENTS.md` explicitly declares that this repository owns version-file
-updates. Otherwise they are protected and must not be committed, staged, or
-released from this repository.
+The `.cloudopsworks/_VERSION` and `.github/_VERSION` files are writable **only** for GitHub
+template repositories (`GH_IS_TEMPLATE=true`). In every other repository they are the
+template generation marker, owned by `tronador repos upgrade`, and must never be
+hand-edited, staged, committed, or released.
 
 ```bash
 VERSION_IN_DIFF=$(git diff HEAD --name-only 2>/dev/null \
@@ -307,13 +313,11 @@ Then use `AskUserQuestion` to inform the user:
 
 State:
 - The project slug and current branch.
-- That this repository is **not authorized to write `_VERSION`** because GitHub
-  does not identify it as a template repository and local `AGENTS.md` does not
-  explicitly override that default protection.
+- That this repository is **not authorized to write `_VERSION`** because GitHub does not
+  identify it as a template repository.
 - The list of files that were reverted.
-- That version file updates must originate from the template/source repository's
-  release workflow, or from an explicit repo-local `AGENTS.md` policy that
-  authorizes this repository to update `_VERSION`.
+- That in this repository `_VERSION` records the template generation and is written only by
+  `tronador repos upgrade`; release version updates originate from the template repository.
 
 Options:
 - A) Continue the release without the `_VERSION` change (file has been reverted)
@@ -498,12 +502,14 @@ Use the matrix that matches `RELEASE_FLOW` to auto-select branch type and semver
 | New module feature                       | `feature`   | MINOR        | `+semver: feature`            |
 | Provider upgrade (backwards-compatible)  | `feature`   | MINOR        | `+semver: minor`              |
 | Provider major upgrade / breaking change | `feature`   | MAJOR        | `+semver: major`              |
-| Explicit compatibility break, but still minor by policy | `feature` | MINOR | `+semver: breaking` |
+| Explicit compatibility break             | `feature`   | MAJOR        | `+semver: major`              |
 
-> **GitHubFlow reminder:** inspect the repository's actual `major-version-bump-message` and `minor-version-bump-message`.
-> - In the generic bundled GitHubFlow example, `+semver: breaking` triggers MAJOR.
-> - In the CloudOps Works GitHubFlow spec and this repository's config, `+semver: breaking` triggers MINOR.
-> Use `+semver: major` whenever you need an unambiguous MAJOR release.
+> **GitHubFlow reminder:** `+semver: breaking` is **not portable** — it lands in
+> `major-version-bump-message` in some repositories and `minor-version-bump-message` in
+> others, and the bundled samples disagree with live configs. Read
+> `grep -nE 'version-bump-message' .cloudopsworks/gitversion.yaml` and classify the
+> annotation from that file before selecting it. Prefer `+semver: major` / `+semver: minor`,
+> which are unambiguous in every configuration seen so far.
 
 Capture: `BRANCH_TYPE` (usually `feature` or `hotfix`), `SEMVER_ANNOTATION`, `SEMVER_LEVEL`. Avoid `fix/*` as a default branch strategy because it is not a first-class GitVersion branch in either bundled config.
 
@@ -622,25 +628,24 @@ a `chore: Version Bump` to the working branch. The target name stays under the s
 `gitflow/...` make namespace even in repositories whose GitVersion model is GitHubFlow.
 
 Decision rule:
-- **GUARD (hard block, no bypass):** If `VERSION_FILE_WRITABLE=false` → **skip this
-  step entirely.** `_VERSION` files must never be written unless GitHub reports
-  `isTemplate=true` or local `AGENTS.md` explicitly authorizes this repository to
-  update its version file. Proceed directly to the read-only path below and then
-  continue to Step 7.
+- **GUARD (hard block, no bypass):** If `VERSION_FILE_WRITABLE=false` → **skip this step
+  entirely.** Only a GitHub template repository (`isTemplate=true`) may write `_VERSION`.
+  No `AGENTS.md` sentence can lift this — the template's `AGENTS.md` is copied verbatim into
+  every implementation repository, so it cannot distinguish one. Proceed directly to the
+  read-only path below and then continue to Step 7.
 - If `VERSION_FILE_WRITABLE=true` AND `RUN_VERSION_FILE_BEFORE_PR=true` → run this step.
 - If `VERSION_FILE_WRITABLE=true` AND `RUN_VERSION_FILE_BEFORE_PR=false` → **run this step
-  anyway** unless the repository has no version file at all (`NO_VERSION_FILE`) or its
-  `AGENTS.md` contains an explicit written statement that the version file is not bumped on
-  release. Running is the default when the file exists and is writable; skipping requires
-  positive evidence, not merely the absence of an instruction to run.
+  anyway** unless the repository has no version file at all (`NO_VERSION_FILE`). Running is
+  the default once the file exists and GitHub reports `isTemplate=true`.
 
-**Never infer "skip" from any of the following** — each is a symptom of the bug this step
-exists to prevent, not a policy signal:
+**When `VERSION_FILE_WRITABLE=true`, never infer "skip" from any of the following** — each is
+a symptom of the bug this step exists to prevent, not a policy signal:
 - The version file is stale relative to the latest tag.
 - Recent releases did not bump it.
 - `AGENTS.md` does not mention `gitflow/version/file` in its numbered workflow.
 
-When the file exists, is writable, and this branch will produce a release, the bump runs.
+In a template repository, when the file exists and this branch will produce a release, the
+bump runs. In every other repository this step is unconditionally skipped.
 
 **Ordering:** run this step after Step 5 (branch pushed) and before any pre-release tag, so
 the `chore: Version Bump` commit is covered by that tag and the release gate's
@@ -1182,12 +1187,12 @@ Then print a concise summary:
   - Flow detection controls branch choice and semver interpretation, **not** the shared `make gitflow/...` target names.
 - **Repo-local release policy overrides generic heuristics** (Step 0 / Steps 6, 12-14):
   - If `AGENTS.md` says GitHub Actions handle releases, set `PUBLISH_MODE=ci` and skip local release creation.
-  - If `AGENTS.md` explicitly requires `make gitflow/version/file` before a PR, do it only when `VERSION_FILE_WRITABLE=true`.
-  - GitHub `isTemplate=true` makes `_VERSION` writable by default for every CloudOps Works managed template family. GitHub `isTemplate=false` or unknown keeps `_VERSION` protected unless local `AGENTS.md` explicitly directs different behavior.
+  - GitHub `isTemplate=true` is the **only** thing that makes `_VERSION` writable. `isTemplate=false` or unknown keeps it protected, and no `AGENTS.md` sentence overrides that — the template's `AGENTS.md` is copied verbatim into every implementation repository, so it cannot grant per-repository authority.
   - Use `IS_TEMPLATE` only for template workflow policy and branch-cleanup heuristics; it does **not** override explicit repo-local publish or version-file policy.
 - **GitHubFlow semver note**: some repos intentionally map `+semver: breaking` to MINOR. Always trust the repo's actual `major-version-bump-message` / `minor-version-bump-message` config over generic assumptions.
-- **A stale `_VERSION` is a defect, never a convention.** When the version file trails the latest tag, prior releases skipped Step 6. Repair it by running Step 6 on this release — never by hand-editing the file, and never by "staying consistent" with the releases that skipped it. Detect version-file maintenance from `git log -- <version-path>`, not from whether `AGENTS.md` happens to document the step.
-- **`_VERSION` write protection (default for non-template repos):** `.cloudopsworks/_VERSION` and `.github/_VERSION` must never be written, staged, or committed when `VERSION_FILE_WRITABLE=false`. Step 6 (`make gitflow/version/file`) is unconditionally skipped in that state, even if `RUN_VERSION_FILE_BEFORE_PR=true`. If `_VERSION` already appears in the diff while protected, Guard 4 in Step 1.5 reverts it immediately. This check runs before any branch, commit, or push action.
+- **In a template repository (`VERSION_FILE_WRITABLE=true`), a stale `_VERSION` is a defect, never a convention.** When the file trails the latest tag, prior releases skipped Step 6. Repair it by running Step 6 on this release — never by hand-editing, and never by "staying consistent" with the releases that skipped it.
+- **In every other repository, a `_VERSION` that trails the latest tag is correct.** It records the template generation, not the module's release version. Never "repair" it, and never report it as drift.
+- **`_VERSION` write protection (every non-template repo):** `.cloudopsworks/_VERSION` and `.github/_VERSION` must never be written, staged, or committed when `VERSION_FILE_WRITABLE=false`. Step 6 (`make gitflow/version/file`) is unconditionally skipped in that state, even if `RUN_VERSION_FILE_BEFORE_PR=true`. Writing it corrupts `tronador repos upgrade` template-tag resolution. If `_VERSION` already appears in the diff while protected, Guard 4 in Step 1.5 reverts it immediately. This check runs before any branch, commit, or push action.
 - **Fetch tags before version calculation:** Run `git fetch origin --tags --prune` before any GitVersion-based `_VERSION`, tag, or publish calculation. Do not continue if the computed `_VERSION` is lower than the latest fetched remote tag.
 - **Workflow Safety Guard (Step 1.5) is mandatory and never skipped** when workflow files appear in the diff. It is the primary mechanism that prevents AI agents from silently modifying workflows in non-template repos or introducing bad version pins in templates. Any bypass requires explicit user clearance via `AskUserQuestion`.
 - **Non-template repos must not modify workflow files — hard block, no bypass.** If `.github/workflows/*.yml` or `.github/workflows/*.yaml` files appear in the diff for an `IS_TEMPLATE=false` repo, Guard 1 fires unconditionally, reverts the files immediately, and does not offer a "proceed anyway" path. Workflow changes must go through the upstream template/source repository, or local `AGENTS.md` must explicitly define that this repository owns workflow edits.
