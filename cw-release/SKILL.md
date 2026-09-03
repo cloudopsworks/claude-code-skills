@@ -96,8 +96,12 @@ Capture: `RELEASE_FLOW` (`gitflow` / `githubflow`).
 **Interpret bundled examples carefully:**
 - `cw-release/gitflow/gitversion.yaml` = GitFlow reference where `+semver: breaking` implies MAJOR.
 - `cw-release/githubflow/gitversion.yaml` = generic GitHubFlow reference where `+semver: breaking` also implies MAJOR.
-- `cw-release/githubflow-cloudopsworks-spec/gitversion.yaml` = CloudOps Works GitHubFlow policy, matching this repository, where `+semver: breaking` implies MINOR and `+semver: major` is required for a MAJOR bump.
-- When a repository already has `.cloudopsworks/gitversion.yaml`, trust that file over bundled examples.
+- `cw-release/githubflow-cloudopsworks-spec/gitversion.yaml` = a CloudOps Works GitHubFlow reference in which `+semver: breaking` implies MINOR. It is a sample, **not** a description of any live repository — real repositories have diverged from it (for example `terraform-module-template` maps `breaking` to MAJOR and defines a `hotfix:` branch the sample omits).
+- When a repository has `.cloudopsworks/gitversion.yaml`, that file is authoritative. **Never state what a repository's annotations do from a bundled sample** — read the regexes:
+  ```bash
+  grep -nE 'version-bump-message' .cloudopsworks/gitversion.yaml
+  ```
+  Resolve `SEMVER_ANNOTATION` against those patterns before using it.
 
 **Detect repository template and version-file authority** — run:
 ```bash
@@ -498,12 +502,14 @@ Use the matrix that matches `RELEASE_FLOW` to auto-select branch type and semver
 | New module feature                       | `feature`   | MINOR        | `+semver: feature`            |
 | Provider upgrade (backwards-compatible)  | `feature`   | MINOR        | `+semver: minor`              |
 | Provider major upgrade / breaking change | `feature`   | MAJOR        | `+semver: major`              |
-| Explicit compatibility break, but still minor by policy | `feature` | MINOR | `+semver: breaking` |
+| Explicit compatibility break             | `feature`   | MAJOR        | `+semver: major`              |
 
-> **GitHubFlow reminder:** inspect the repository's actual `major-version-bump-message` and `minor-version-bump-message`.
-> - In the generic bundled GitHubFlow example, `+semver: breaking` triggers MAJOR.
-> - In the CloudOps Works GitHubFlow spec and this repository's config, `+semver: breaking` triggers MINOR.
-> Use `+semver: major` whenever you need an unambiguous MAJOR release.
+> **GitHubFlow reminder:** `+semver: breaking` is **not portable** — it lands in
+> `major-version-bump-message` in some repositories and `minor-version-bump-message` in
+> others, and the bundled samples disagree with live configs. Read
+> `grep -nE 'version-bump-message' .cloudopsworks/gitversion.yaml` and classify the
+> annotation from that file before selecting it. Prefer `+semver: major` / `+semver: minor`,
+> which are unambiguous in every configuration seen so far.
 
 Capture: `BRANCH_TYPE` (usually `feature` or `hotfix`), `SEMVER_ANNOTATION`, `SEMVER_LEVEL`. Avoid `fix/*` as a default branch strategy because it is not a first-class GitVersion branch in either bundled config.
 
