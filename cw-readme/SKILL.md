@@ -4,7 +4,7 @@ version: 1.0.0
 description: |
   CloudOps Works README maintenance workflow. Treats README.yaml as the source
   of truth, updates repository documentation in YAML-first format, and runs
-  `make readme` as the last step to regenerate README.md.
+  `tronador readme build` as the last step to regenerate README.md.
 allowed-tools:
   - Bash
   - Read
@@ -22,7 +22,9 @@ where `README.yaml` is the source of truth and `README.md` is generated from it.
 ## Rules
 
 - Treat `README.yaml` as the only maintained source document.
-- Update `README.md` only by running `make readme` as the final step.
+- Update `README.md` only by running `tronador readme build` as the final step.
+- If Makefile targets or dependency documentation changed, run `tronador docs targets`
+  before the final README build.
 - Preserve repository-specific documentation conventions from the active `AGENTS.md`.
 - If the task includes committing the documentation changes, follow the repo's
   commit policy from `AGENTS.md`. Default to a conventional-commit subject
@@ -43,9 +45,10 @@ where `README.yaml` is the source of truth and `README.md` is generated from it.
    - `badges`
    - `contributors`
 4. If examples or command snippets changed, ensure referenced files/scripts actually exist.
-5. Run `make readme` last.
-6. Verify `README.md` reflects the new YAML content.
-7. If the user asked for a commit, stage only the documentation changes and
+5. If Makefile targets or dependency documentation changed, run `tronador docs targets`.
+6. Run `tronador readme build` last.
+7. Verify `README.md` reflects the new YAML content.
+8. If the user asked for a commit, stage only the documentation changes and
    create the commit using the repo's required conventional-commit format.
 
 ## Expected output

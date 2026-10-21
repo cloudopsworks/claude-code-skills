@@ -3,8 +3,7 @@
   ** 
   ** This file was automatically generated. 
   ** 1) Make all changes to `README.yaml` 
-  ** 2) Run `make init` (you only need to do this once)
-  ** 3) Run`make readme` to rebuild this file. 
+  ** 2) Run `tronador readme build` to rebuild this file.
   -->
 [![README Header][readme_header_img]][readme_header_link]
 
@@ -108,7 +107,7 @@ Optional environment overrides:
 2. Run `./scripts/install-cloudopsworks-skills.sh`.
 3. Use `/cw-release` for release automation.
 4. Use `/cw-readme` when maintaining YAML-first documentation.
-5. When repository documentation changes, update `README.yaml` first and run `make readme` last.
+5. When repository documentation changes, update `README.yaml` first, refresh target docs with `tronador docs targets` when required, and run `tronador readme build` last.
 
 
 ## Examples
