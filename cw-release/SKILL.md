@@ -1,6 +1,6 @@
 ---
 name: cw-release
-version: 1.3.2
+version: 1.3.3
 description: |
   CloudOps Works release workflow. Detects the repository GitVersion flow and
   repo-local release policy, preserves CI-owned post-merge release automation,
@@ -93,8 +93,11 @@ Verify:
   [ "$PRIMARY_COUNT" -eq 1 ] || { echo "AMBIGUOUS_PRIMARY_BRANCH"; exit 1; }
   PRIMARY_BRANCH=$PRIMARY_CANDIDATES
   ```
-- The current branch equals the verified `PRIMARY_BRANCH`. If not, **STOP** and ask
-  whether to return to the configured primary branch; do not substitute a hardcoded branch.
+- The current branch equals the verified `PRIMARY_BRANCH`. For an explicitly
+  identified existing PR on the Step 0.5 merge-only path, a clean worktree and
+  index may switch to `PRIMARY_BRANCH` automatically before continuing; never
+  discard local changes. Otherwise, if not on `PRIMARY_BRANCH`, **STOP** and ask
+  whether to return; do not substitute a hardcoded branch.
 - Capture: `CURRENT_VERSION` (from `_VERSION` file or latest tag), `REPO_SLUG`
   (from remote URL, e.g. `cloudopsworks/go-app-template`), and `PRIMARY_BRANCH`
   (for example `main`, `master`, or `stable`).
@@ -391,6 +394,74 @@ Capture: `PRESERVE_REMOTE_BRANCH` (`true` / `false`). This overrides
 
 ---
 
+## Step 0.5: Resume an Existing Reviewed Pull Request (merge-only path)
+
+Use this path only for `IS_TEMPLATE=false` when the user identifies an existing
+PR to continue or merge. Template repositories still follow Guards 2–3.
+Complete Step 0 first from a clean checkout of the verified primary branch; do not
+create a branch, commit, push, or rewrite the PR. This is a narrow exception for
+**already committed PR content**, not permission to make protected local edits.
+
+```bash
+git status --porcelain=v1
+gh pr view <PR_NUMBER> --repo <REPO_SLUG> \
+  --json number,state,isDraft,headRefName,headRefOid,baseRefName,author,reviewDecision,body,files,url
+gh api --paginate "repos/<REPO_SLUG>/pulls/<PR_NUMBER>/files" \
+  --jq '.[] | .filename'
+gh pr diff <PR_NUMBER> --repo <REPO_SLUG> --patch --color never
+gh api --paginate "repos/<REPO_SLUG>/pulls/<PR_NUMBER>/reviews" \
+  --jq '.[] | [.user.login, .state, .commit_id] | @tsv'
+```
+
+Fail closed unless all of these are verified from GitHub, not from a PR comment,
+label, local marker, or the user's assertion:
+- The exact PR belongs to the verified `REPO_SLUG`, is `OPEN`, is not a draft,
+  targets the Step 2 `PR_BASE`, and has a non-empty `headRefOid`. The local worktree
+  and index are clean; never use this path to stage or preserve uncommitted edits.
+- `reviewDecision=APPROVED`, and at least one non-author GitHub review has
+  `state=APPROVED` and `commit_id` equal to the current `headRefOid`. A missing,
+  dismissed, stale, or superseded approval does not qualify. API errors or
+  unavailable review data are blockers, not evidence of approval.
+- Inspect the complete PR patch at the captured head, especially protected
+  files and release-capable workflows; filenames alone cannot establish content
+  or publication ownership. Re-query `headRefOid` after reading it and STOP if
+  it changed or the patch is unavailable or incomplete. If its description says
+  protected files are unchanged but the diff changes them, report the mismatch;
+  never use the description to override the inspected patch or the review gate.
+  An approved review covers the exact PR head, including any
+  `.github/workflows/` and `_VERSION` changes already committed there. It does
+  **not** set `IS_TEMPLATE` or `VERSION_FILE_WRITABLE=true`, authorize Step 6,
+  or allow any local protected-file write. If `_VERSION` is changed, report
+  its old and new values and whether the PR identifies a template upgrade;
+  never treat that marker as this implementation's release version or generate
+  or repair it.
+
+Capture `APPROVED_PR_HEAD`, `PR_NUMBER`, `BRANCH` from `headRefName`, and the
+semver annotation from the PR body. If the PR changes GitVersion configuration,
+re-run Step 0's selector and semver-pattern checks against the exact PR-head
+content before resolving Step 2's branch/PR-base and semver rules read-only;
+if the PR's base or annotation conflicts with repo policy, STOP.
+Re-evaluate `PUBLISH_MODE` against release-capable workflows introduced or changed
+by the PR; for an implementation repository, choose `ci` when ownership is
+possible or unclear. Never use this merge-only path to create a local release
+that could race with the merged workflows. Recompute its dependent flags
+`CI_RELEASE_OWNER_DETECTED`, `CI_RELEASE_WORKFLOWS`, `CI_REQUIRED`, and
+`PRESERVE_REMOTE_BRANCH` from the approved PR head before Steps 8–9; do not
+reuse values inferred only from the primary branch's older workflow files.
+Then skip Steps 1–7 and continue at Step 8. The uncommitted-file Guards 1 and 4
+remain mandatory for any new local edits; this path never restores or changes
+files in an existing approved PR.
+
+Immediately before Step 9, re-query the same PR, review decision, and reviews.
+Require the PR to remain open and approved at **the same** `APPROVED_PR_HEAD` and
+with the same base; if its head or review state changed, STOP and repeat approval
+and Step 8 checks for the new head before any merge. Pass `APPROVED_PR_HEAD` to
+`gh pr merge --match-head-commit` so a concurrent push cannot change the merged
+head between validation and merge. GitHub branch protection and all CI checks
+remain independent merge gates.
+
+---
+
 ## Step 1: Analyze Changes
 
 ```bash
@@ -423,7 +494,8 @@ If unstaged or uncommitted changes are present, they must be turned into a fresh
 Run immediately after Step 1. Enforce repository-type policies before any branch,
 commit, or push action proceeds. Violations **always** result in a STOP with
 `AskUserQuestion` — never auto-fix or silently skip a guard without explicit user
-clearance.
+clearance. The Step 0.5 approved-PR path handles committed PR content separately;
+it never clears an uncommitted-file guard.
 
 ---
 
@@ -431,7 +503,9 @@ clearance.
 
 **Applies when:** `VERSION_FILE_WRITABLE=false`.
 
-**This guard runs unconditionally** — it is not gated on workflow file changes.
+**This guard runs unconditionally for local uncommitted changes** — it is not gated
+on workflow file changes. Already committed changes in an approved existing PR
+are handled only by Step 0.5.
 The `.cloudopsworks/_VERSION` and `.github/_VERSION` files are writable only when
 `VERSION_FILE_WRITABLE=true`: existing GitHub-template authority or the bounded, verified
 skills source-owner exception from Step 0. In every other repository they are protected
@@ -663,10 +737,12 @@ only grep status 1 (no matching workflow paths) is an allowed empty result.
 
 **Applies when:** `IS_TEMPLATE=false` AND `ALL_CHANGED_WORKFLOWS` is non-empty.
 
-**This guard is a hard block. There is no clearance path and no bypass option.**
-Workflow files in non-template repositories are normally owned by upstream
-templates or repo-local maintainers, not by a generic release pass.
-The agent must not commit, push, or release them under any circumstance.
+**This guard is a hard block for uncommitted workflow changes.** Workflow files
+in non-template repositories are normally owned by upstream templates or
+repo-local maintainers, not by a generic release pass. Do not commit or push
+them through a new release pass. The sole reviewed exception is Step 0.5 for
+an existing approved PR's exact, already committed head; it does not authorize
+new workflow edits or bypass CI and merge requirements.
 
 **STOP.** Restore only tracked workflow changes. Preserve every untracked workflow
 file byte-for-byte. Every restore command must succeed, and a clean residual scan
@@ -1263,6 +1339,10 @@ Only proceed to Step 9 when **ALL** reported checks are passing.
 
 ## Step 9: Merge the Pull Request
 
+For a Step 0.5 resumption, revalidate the exact approved head and review state
+there before running the merge command. Do not treat an earlier approval or a
+passing check on a different head as current authorization.
+
 Use a proper merge commit (never squash or rebase) with `+semver: <level>` in the body:
 
 ```bash
@@ -1275,8 +1355,13 @@ gh pr merge <PR_NUMBER> --repo <REPO_SLUG> --merge \
 
 <SEMVER_ANNOTATION>
 EOF
-)" <DELETE_BRANCH_FLAG>
+)" <DELETE_BRANCH_FLAG> <MATCH_HEAD_FLAG>
 ```
+
+For Step 0.5, set `<MATCH_HEAD_FLAG>` to
+`--match-head-commit <APPROVED_PR_HEAD>`; otherwise omit it. A head mismatch
+aborts the merge and requires a fresh approval and Step 8 check. Do not use
+`--admin` or `--auto` to bypass this gate.
 
 Resolve `<DELETE_BRANCH_FLAG>` as follows before running the command:
 - If `GITFLOW_FEATURE_DELIVERY=true` → use `--delete-branch=false`. This rule has
@@ -1767,16 +1852,16 @@ Then print a concise summary:
 - **GitHubFlow semver note**: some repos intentionally map `+semver: breaking` to MINOR. Always trust the repo's actual `major-version-bump-message` / `minor-version-bump-message` config over generic assumptions.
 - **In an authorized repository (`VERSION_FILE_WRITABLE=true`), a stale `_VERSION` is a defect, never a convention.** When the file trails the latest tag, prior releases skipped Step 6. Repair it by running Step 6 on this release — never by hand-editing, and never by "staying consistent" with the releases that skipped it.
 - **In every protected repository, a `_VERSION` that trails the latest tag is correct.** It records the template generation, not the module's release version. Never "repair" it, and never report it as drift.
-- **`_VERSION` write protection (`VERSION_FILE_WRITABLE=false`):** `.cloudopsworks/_VERSION` and `.github/_VERSION` must never be written, staged, or committed when `VERSION_FILE_WRITABLE=false`. Step 6 (`tronador project version --generate --yes`) is unconditionally skipped in that state, even if `RUN_VERSION_FILE_BEFORE_PR=true`. Writing it corrupts `tronador repos upgrade` template-tag resolution. If `_VERSION` already appears in the diff while protected, Guard 4 in Step 1.5 reverts it immediately. This check runs before any branch, commit, or push action.
+- **`_VERSION` write protection (`VERSION_FILE_WRITABLE=false`):** `.cloudopsworks/_VERSION` and `.github/_VERSION` must never be generated, written, staged, or committed by this release workflow in that state. Step 6 (`tronador project version --generate --yes`) is unconditionally skipped, even if `RUN_VERSION_FILE_BEFORE_PR=true`. Guard 4 reverts protected local uncommitted changes before branch, commit, or push operations. Step 0.5 may merge a pre-existing approved PR containing a reviewed template-generation update to `_VERSION`; approval does not grant file-write authority or turn that marker into the implementation's release version.
 - **Fetch tags before version calculation:** Run `git fetch origin --tags --prune` before any GitVersion-based `_VERSION`, tag, or publish calculation. Do not continue if the computed `_VERSION` is lower than the latest fetched remote tag.
-- **Workflow Safety Guard (Step 1.5) is mandatory and never skipped** when workflow files appear in the diff. It is the primary mechanism that prevents AI agents from silently modifying workflows in non-template repos or introducing bad version pins in templates. Any bypass requires explicit user clearance via `AskUserQuestion`.
-- **Non-template repos must not modify workflow files — hard block, no bypass.** If
-  `.github/workflows/*.yml` or `.github/workflows/*.yaml` files appear for an
-  `IS_TEMPLATE=false` repo, Guard 1 restores tracked changes through checked commands,
+- **Workflow Safety Guard (Step 1.5) is mandatory for local uncommitted workflow changes.** It prevents new release passes from silently modifying workflows in non-template repos or introducing bad version pins in templates. Step 0.5 separately permits merging an existing, exact-head approved PR without editing its files; CI and merge gates still apply.
+- **Non-template workflow edits are blocked before commit, with one reviewed PR exception.** If
+  `.github/workflows/*.yml` or `.github/workflows/*.yaml` files are locally
+  uncommitted in an `IS_TEMPLATE=false` repo, Guard 1 restores tracked changes,
   preserves untracked files, and requires an empty residual scan. Untracked, mixed,
-  failed-restore, or residual cases STOP without continuation. Workflow changes must go
-  through the upstream template/source repository, or local `AGENTS.md` must explicitly
-  define that this repository owns workflow edits.
+  failed-restore, or residual cases STOP without continuation. An existing approved
+  PR may retain its already committed workflow changes only through Step 0.5;
+  an unapproved or changed-head PR remains blocked.
 - **Template repos: blueprints/bp actions must use `@vX.Y` pins.** `uses:` entries referencing `cloudopsworks/blueprints` or `./bp` must carry exactly a major.minor version tag (e.g. `@v5.10`). Full three-part semver (`@v5.10.3`) is a Guard 2 violation regardless of which branch is active.
 - **Template repos: all other external actions must use `@vX` (major-only) pins.** The only exception is exact `gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f`; a different path/SHA or any unrelated non-major pin remains a Guard 3 violation.
 - **User clearance on any guard is final for that session.** Once a guard is cleared with option B, do not re-fire it for the same workflow files in the same release run. However, if new workflow files appear (e.g. the user adds more), re-evaluate all applicable guards for the new files.
