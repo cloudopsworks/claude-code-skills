@@ -104,7 +104,7 @@ quickstart: |-
   2. Run `./scripts/install-cloudopsworks-skills.sh`.
   3. Use `/cw-release` for release automation.
   4. Use `/cw-readme` when maintaining YAML-first documentation.
-  5. When repository documentation changes, update `README.yaml` first and run `make readme` last.
+  5. When repository documentation changes, update `README.yaml` first, refresh target docs with `tronador docs targets` when required, and run `tronador readme build` last.
 
 include:
   - "docs/targets.md"
