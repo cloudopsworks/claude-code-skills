@@ -1,11 +1,11 @@
 ---
 name: cw-release
-version: 1.3.3
+metadata:
+  version: "1.4.0"
 description: |
-  CloudOps Works release workflow. Detects the repository GitVersion flow and
-  repo-local release policy, preserves CI-owned post-merge release automation,
-  stays portable across Claude Code, Codex, and OpenCode, and then drives the
-  permitted Tronador CLI/gh release path.
+  Release CloudOps Works implementations and templates with Tronador CLI. Detect
+  GitVersion flow, protect template-owned files, and distinguish operator-owned
+  branch testing from CI-owned final publication.
   Use when asked to "release", "ship a fix", "create a release branch",
   "hotfix", "feature branch and PR", or "merge and tag".
 allowed-tools:
@@ -66,6 +66,28 @@ fallback.
 
 ## Step 0: Environment Check
 
+**Use the installed `tronador` executable, not a Makefile, to drive releases.**
+Start with `command -v tronador` and `tronador version`; check the selected
+subcommand's `--help` against the [versions command reference](https://github.com/cloudopsworks/tronador-cli/blob/v0.6.1/docs/versions-command.md).
+A non-template repository needs neither a Makefile nor a template/project marker
+for `tronador versions`. Do not discover or invoke legacy Make targets, add an
+include, or run `tronador versions init`, `project init`, or `repos upgrade`
+to unblock a release. If a required CLI capability is missing or refuses an
+operation, STOP with the command, version and reason; do not bypass its guard
+with Make, manual Git, or a different finish mode. `--allow-network` permits
+missing-tool provisioning; it does not authorize pushing, opening PRs or deletion.
+Branch-action `--dry-run` is a plan, not proof of branch parity or merge safety.
+Only version-calculating operations need a compatible GitVersion (PATH, CLI
+cache or explicit tool path); PR operations need authenticated `gh`. Check
+the tools for the selected path, not every project tool for every release.
+
+Git still owns diff, staging, commits and ref evidence; GitHub owns review,
+checks, merge and release observation. Read `AGENTS.md` **and its referenced
+release policy** before selecting commands. In particular, identify whether
+a published branch test tag or downstream test evidence is required, separately
+from who publishes the final release. A legacy command in a workflow is a signal
+to inspect for CI ownership, not a command for the agent to execute.
+
 ```bash
 git remote -v
 git branch --show-current
@@ -93,26 +115,35 @@ Verify:
   [ "$PRIMARY_COUNT" -eq 1 ] || { echo "AMBIGUOUS_PRIMARY_BRANCH"; exit 1; }
   PRIMARY_BRANCH=$PRIMARY_CANDIDATES
   ```
-- The current branch equals the verified `PRIMARY_BRANCH`. For an explicitly
-  identified existing PR on the Step 0.5 merge-only path, a clean worktree and
-  index may switch to `PRIMARY_BRANCH` automatically before continuing; never
-  discard local changes. Otherwise, if not on `PRIMARY_BRANCH`, **STOP** and ask
-  whether to return; do not substitute a hardcoded branch.
-- Capture: `CURRENT_VERSION` (from `_VERSION` file or latest tag), `REPO_SLUG`
+- Choose the entry path before switching branches:
+  - For an explicitly identified Step 0.5 merge-only PR, a clean worktree and
+    index may switch to the verified primary; never discard local work.
+  - For a request **only** to test-tag an existing published feature/hotfix,
+    stay on that clean branch. Complete Step 0 identity, canonical selector and
+    policy checks and verify Step 2 permits this branch. Continue directly to
+    Step 6.5, checking Step 5 parity read-only. Do not edit, push commits or open a PR.
+  - Otherwise begin on the verified primary. If elsewhere, STOP and ask
+    whether to return; never substitute a hardcoded branch.
+- Capture: `CURRENT_VERSION` (previous verified release tag on the target line, or none; not an implementation’s `_VERSION` marker), `REPO_SLUG`
   (from remote URL, e.g. `cloudopsworks/go-app-template`), and `PRIMARY_BRANCH`
-  (for example `main`, `master`, or `stable`).
+  (for example `main`, `master`, or `stable`). Save the exact previous stable tag
+  as `PREV_TAG` (empty for a first release); exclude prereleases, aliases and
+  unrelated release lines. Ambiguous history is not a reason to guess.
 
 **Preflight trusted repository identity and template status before flow resolution** — run:
 ```bash
-ORIGIN_URL=$(git remote get-url origin 2>/dev/null || true)
+git remote get-url --all origin
+git remote get-url --all --push origin
 gh repo view "$REPO_SLUG" --json nameWithOwner,isTemplate,url 2>/dev/null \
   || echo '{"nameWithOwner":null,"isTemplate":null,"url":null}'
 cat AGENTS.md 2>/dev/null || true
 ```
 
+When the API identity is unavailable or conflicts with origin, STOP before mutation.
 Set `GH_IS_TEMPLATE` from GitHub (`true`, `false`, or `unknown`). Set
 `GH_REPO_IDENTITY_VERIFIED=true` only when the trusted API `nameWithOwner` and URL agree
-with the normalized `origin` remote. A directory basename, local marker, branch name, or
+with both the normalized fetch and push destinations of `origin`. Multiple push
+destinations or a fork/host mismatch must STOP before publication. A directory basename, local marker, branch name, or
 document is never repository identity. Unknown or conflicting API/remote results fail
 closed.
 
@@ -241,6 +272,16 @@ Use this decision table as the testable guard contract:
 | Any symlink, including one targeting a valid selector file | either | `unverified`; STOP |
 | Invalid path or locally deleted tracked config | either | `unverified`; STOP |
 
+**Version calculation on the absence exception:** set `VERSION_CALC_ALLOWED=true`
+for a verified canonical selector. For `verified-app-template-absence-exception`,
+set it false unless repo policy explicitly uses GitVersion defaults **and** provides
+independent evidence of the intended version. Identity alone supplies no version
+model, and `--main-branch` cannot select one. Once the requested path is known,
+STOP in preflight if it requires a calculated marker or tag without this evidence.
+If allowed on the exception, compare the evaluated dry-run with the independently
+expected version before writing or publishing. Branch and PR delivery alone do
+not require version generation.
+
 **Interpret bundled examples carefully:**
 - `cw-release/gitflow/gitversion.yaml` = GitFlow reference where `+semver: breaking` implies MAJOR.
 - `cw-release/githubflow/gitversion.yaml` = generic GitHubFlow reference where `+semver: breaking` also implies MAJOR.
@@ -263,7 +304,8 @@ fi
 ```
 
 Keep these decisions separate:
-- `CLI_GENERATION_CAPABLE=true` only when Tronador's own guarded generation accepts the repository marker. Capability means the CLI may generate a file; it grants no release authority by itself.
+- Do not probe generation to discover authority. Leave `CLI_GENERATION_CAPABLE` untested
+  in protected repositories; only evaluate the CLI guard in an already-authorized Step 6.
 - `SKILLS_SOURCE_OWNER=true` only for verified canonical identity `cloudopsworks/claude-code-skills` or `cloudopsworks/skill-builder-templates`, a known boolean GitHub template status, a regular, non-symlink `.cloudopsworks/.skills` marker, the canonical supported WayOfWork selector, and corroborating tracked `_VERSION` plus repo-local source-owner policy. Copied prose, an arbitrary/forked repository, a marker alone, unknown identity/template status, or a missing/symlink/non-regular marker never qualifies.
 
 Set `VERSION_FILE_WRITABLE`:
@@ -303,42 +345,23 @@ grep -RInE \
   .github/workflows .cloudopsworks 2>/dev/null || true
 grep -RInE '(^|[[:space:]])goreleaser:[[:space:]]*true([[:space:]]|$)' \
   .cloudopsworks .github 2>/dev/null || true
-gh workflow list --repo <REPO_SLUG> --all \
-  --json id,name,path,state 2>/dev/null || true
+gh api --paginate "repos/$REPO_SLUG/actions/workflows" \
+  --jq '.workflows[] | {id,name,path,state}' || exit 1
 ```
 
-**Detect version-file maintenance from git history, not from prose.** Documentation can
-omit a step the repository has in fact always performed. Ask the history whether this repo
-maintains its version file:
-
-```bash
-VERSION_PATH=$(ls .cloudopsworks/_VERSION .github/_VERSION 2>/dev/null | head -1)
-if [ -n "$VERSION_PATH" ]; then
-  echo "VERSION_PATH=$VERSION_PATH"
-  echo "BUMP_COMMITS=$(git log --oneline -- "$VERSION_PATH" | wc -l | tr -d ' ')"
-  printf 'FILE_VALUE=%s\nLATEST_TAG=%s\n' \
-    "$(cat "$VERSION_PATH")" "$(git tag --sort=-v:refname | head -1)"
-else
-  echo "NO_VERSION_FILE"
-fi
-```
+Follow triggers and reusable workflow calls, rather than treating filenames or
+a grep miss as proof that no publisher exists. If you cannot inspect live
+policy or the relevant workflow chain, never infer operator ownership.
 
 Set the following policy flags:
-- `RUN_VERSION_FILE_BEFORE_PR=true` when `VERSION_FILE_WRITABLE=true` and `BUMP_COMMITS` is
-  greater than zero. Count only `chore: Version Bump` commits — a
-  `chore: Upgrade repository from template, version: …` commit is `tronador repos upgrade`
-  writing the template generation marker, **not** a release bump, and every implementation
-  repository has those. This flag can only cause a write when `VERSION_FILE_WRITABLE=true`.
-- **When `VERSION_FILE_WRITABLE=true` (authorized template or verified source owner):** a version file that trails
-  `LATEST_TAG` is **drift to be repaired, never policy to be matched.** Prior releases
-  skipping the bump is a defect in those releases. Never reason "the last N releases left it
-  stale, so I will too" — set `RUN_VERSION_FILE_BEFORE_PR=true` and let this release
-  self-heal the file. Report the drift to the user.
-- **When `VERSION_FILE_WRITABLE=false` (protected repository):** a version file
-  that trails `LATEST_TAG` is **correct and expected** — it names the template generation,
-  not this module's version. It is not drift. Do not repair it, do not report it as a
-  defect, and do not set `RUN_VERSION_FILE_BEFORE_PR`.
-- Set `CI_RELEASE_OWNER_DETECTED=true` for an implementation repository when any
+- `RUN_VERSION_FILE_BEFORE_PR=true` only for a repository with established
+  `VERSION_FILE_WRITABLE=true` and an existing version marker. Confirm its path
+  and history with `git log -- <version-path>`. Older releases skipping an
+  authorized marker bump are not precedent for skipping it now.
+- Otherwise set it false. In an implementation a template-upgrade commit or a
+  marker trailing `PREV_TAG` is normal, not release history or drift. Do not
+  create a missing marker as part of this release.
+- Set `CI_RELEASE_OWNER_DETECTED=true` when any
   active workflow or repo-local release configuration can tag, publish, create a
   release, or invoke a release tool after merge. This includes
   `tronador versions tag --publish` under any workflow filename and GoReleaser for
@@ -356,12 +379,11 @@ Set the following policy flags:
   policy or established release mechanics positively assign tag + release
   publication to the operator.
 
-**Template repository override:** After computing `PUBLISH_MODE` from workflow files, if
-`GH_IS_TEMPLATE=true` → unconditionally override to `PUBLISH_MODE=local`. GitHub
-disables Actions on template repositories; `pr-merge-tagging.yml`,
-`release-management.yml`, and any other workflows will never execute even when present
-in `.github/workflows/`. Tags and GitHub releases must always be created locally for
-template repos — CI will never do it regardless of what workflow files exist.
+Template status controls file authority, not whether Actions is enabled. Preserve
+local publication for templates whose live CI state and repository policy confirm
+operator ownership. An active or possible CI publisher (template or implementation)
+is observe-only after merge. If neither owner can be established, STOP rather
+than defaulting to local.
 
 Capture: `RUN_VERSION_FILE_BEFORE_PR` (`true` / `false`),
 `CI_RELEASE_OWNER_DETECTED` (`true` / `false`), the matching
@@ -371,12 +393,10 @@ post-merge observer gate and Steps 6 and 12-14.
 Detect CI requirement from AGENTS.md content:
 - `CI_REQUIRED=true` when AGENTS.md contains phrases like "wait for checks", "checks must
   pass", "CI required", "do not merge until checks", or when `PUBLISH_MODE=ci`.
-- `CI_REQUIRED=false` when AGENTS.md explicitly says "no CI", "no checks", or the repo has
-  no `.github/workflows/` directory.
-- `CI_REQUIRED=false` when `GH_IS_TEMPLATE=true` — GitHub template repositories have
-  Actions disabled by default; checks will never register on feature PRs regardless of
-  what workflows are present in `.github/workflows/`. Do not poll; proceed directly to
-  merge after the PR is created.
+- Only set `CI_REQUIRED=false` with positive evidence checks are not required:
+  repo policy, live workflows **and** branch protection/rulesets must agree.
+  `isTemplate`, a missing workflows directory, a failed API query or an empty
+  check rollup alone is not evidence. Conflicting policy/checks must STOP.
 - `CI_REQUIRED=unknown` when AGENTS.md is silent on the topic (default; resolved in Step 8
   via the GitHub API).
 
@@ -1079,54 +1099,83 @@ GitFlow release-branch workflow owns promotion from `develop`, tagging, and rele
 
 After `BRANCH_TYPE` is known, set `PURGE_RELEASE_BRANCH`:
 - If `IS_TEMPLATE=true` **and** `BRANCH_TYPE=feature` → `PURGE_RELEASE_BRANCH=true`
-- Otherwise → `PURGE_RELEASE_BRANCH=false`
+- Else set `PURGE_RELEASE_BRANCH=true` only when explicit repo policy calls for
+  deleting both refs for that exact merged work branch; otherwise set it false.
+  Never infer permission for remote deletion from a local-only cleanup request.
 
-Except for `GITFLOW_FEATURE_DELIVERY=true`, template repositories should not retain
-merged `feature/*` release branches locally or remotely. GitFlow feature delivery
-preserves its source branch and terminates after the `develop` merge/CI snapshot.
+This cleanup flag never overrides CI ownership, a preservation requirement, or
+the GitFlow feature terminal path after the `develop` merge/CI snapshot.
 
 ---
 
 ## Step 3: Determine Branch Name
 
-Choose the branch strategy that matches `RELEASE_FLOW`.
+Select **one** command on the verified base. Use the verified `PRIMARY_BRANCH`
+for `--main-branch`, including when it is not named main/master.
 
-For `RELEASE_FLOW=gitflow` and `BRANCH_TYPE=hotfix`, Tronador auto-names the branch with the version bump:
+| Selected by Step 2 | Start operation | Expected source |
+|---|---|---|
+| Feature, canonical selector | `tronador versions feature start "$SLUG" --main-branch "$PRIMARY_BRANCH"` | `develop` for GitFlow; verified primary otherwise |
+| Hotfix, explicitly supported by flow and repo policy | `tronador versions hotfix start --main-branch "$PRIMARY_BRANCH"` | verified primary for this workflow; CLI derives the patch version |
+
+Before executing the selected start, protect pending edits. The CLI fetches
+and fast-forwards its base; it is **not** the skill's dirty-worktree guard.
+
 ```bash
-tronador versions hotfix start
-BRANCH=$(git branch --show-current)
+START_BASE=$PRIMARY_BRANCH
+if [ "$BRANCH_TYPE" = feature ] && [ "$RELEASE_FLOW" = gitflow ]; then START_BASE=develop; fi
+git fetch origin --prune || exit 1
+BASE_OID=$(git rev-parse --verify "refs/remotes/origin/$START_BASE^{commit}") || exit 1
+CURRENT_OID=$(git rev-parse --verify HEAD) || exit 1
+PENDING=$(git status --porcelain=v1 --untracked-files=all) || exit 1
+if [ -n "$PENDING" ] && [ "$CURRENT_OID" != "$BASE_OID" ]; then
+  echo "STOP: pending edits are not based on the intended release base" >&2
+  exit 1
+fi
 ```
 
-For `feature` branches, derive a short slug from the changed files or change
-nature (max 30 chars, kebab-case, no special chars). Examples: `agents-md-guidelines`,
-`vpc-outputs`, `provider-upgrade-v5`.
+Do not stash, reset or carry edits across divergent commits. If the remote
+advances during start with edits pending, STOP before staging unless the new
+branch still points to the captured `BASE_OID` and the edits are intact. On
+failure inspect the branch, refs and worktree; do not retry from assumed state.
+Use a short kebab-case `SLUG`. Verify `BRANCH=$(git branch --show-current)`
+matches the intended namespace and `HEAD` matches the fetched expected base;
+STOP on mismatch or an existing branch, never overwrite it. Do not invent
+`fix/*` or start a support/release promotion as part of feature delivery.
 
-For any verified flow and `BRANCH_TYPE=feature`, use the positional CLI form:
-```bash
-tronador versions feature start "<slug>"
-BRANCH="feature/<slug>"
-```
-
-This is an intentional migration from legacy `start-no-develop`: Tronador bases the
-feature on `develop` for GitFlow and on the configured primary branch for GitHubFlow or
-trunk-based flow. Do not run it until either the canonical selector is verified and
-consistent or the captured flow status is the narrowly bounded
-`verified-app-template-absence-exception`; no other missing-config repository satisfies
-this gate.
-
-Only use `hotfix/*` in `githubflow` repositories if repo-local automation explicitly expects it (for example workflow conditions, labelers, or docs that reference `hotfix/**`). Do not default to `fix/*` unless the repository clearly documents that convention.
-
-Verify the branch was created:
-```bash
-git branch --show-current
-```
+**Only for `verified-app-template-absence-exception`:** the skill resolves
+GitHub Flow from trusted identity, but Tronador v0.6.1 would use GitFlow on a
+missing config. `--main-branch` does not override that. Only feature delivery
+is defined here; STOP on a request for a different branch topology. Verify the
+fetched primary and local primary point to the same commit, then use
+`git switch --no-track -c "feature/$SLUG" "refs/remotes/origin/$PRIMARY_BRANCH"`.
+Verify its head as above. This is not a fallback after a CLI failure; do not
+write a selector, use this exception in an implementation repo, or let the CLI
+choose the PR base on this path. The Step 0 `VERSION_CALC_ALLOWED` gate
+still applies to any subsequent version calculation.
 
 ---
 
 ## Step 4: Stage and Commit
 
-Stage only the changed files relevant to this release. Do not stage unrelated files,
-`.env`, credentials, or generated files unless they are `_CHANGELOG`, or `_VERSION`
+Before staging, run the repo's release checks. For a managed implementation,
+`tronador project detect --json` and `tronador project capabilities --json`
+identify the available [project operations](https://github.com/cloudopsworks/tronador-cli/blob/v0.6.1/docs/project-command.md);
+they do not identify a GitHub template or grant release authority. Prefer the
+advertised `tronador project format` / `tronador project lint` where applicable;
+inspect formatting edits before committing. If a project profile is absent,
+the independent `versions` workflow still works: use repo-native test/build
+commands for checks Tronador does not provide. Never skip a required check.
+Use `tronador docs targets` only for configured target-doc changes, then
+`tronador readme build` last for YAML-first docs. Declared README includes
+may use Make internally; do not require a Makefile for other repositories.
+Plain `tronador project version` writes application metadata (including
+`VERSION`), not the upgrade marker: use it only when expressly required by
+the app's release policy, never as a read-only probe or substitute for Step 6.
+
+Recheck the diff and applicable Step 1.5 guards after any generator or formatter.
+Stage only release-related changes, including required generated docs or `_CHANGELOG`.
+Never include credentials or unrelated staged work. Include `_VERSION`
 **only when `VERSION_FILE_WRITABLE=true`** — never stage
 `.cloudopsworks/_VERSION` or `.github/_VERSION` when version-file protection is
 active.
@@ -1161,7 +1210,6 @@ fix: improve AGENTS.md guidelines with outputs section and dependency management
 - Add Outputs guidelines section with copyright header and sensitive flag rules
 - Add Module Dependency Management section for git submodule handling
 - Clarify publish-first workflow for feature branches
-- Fix wording: 'Use make as been provided' -> 'Use make as provided'
 
 +semver: fix
 
@@ -1175,16 +1223,21 @@ EOF
 
 ---
 
-## Step 5: Push Branch to Remote
+## Step 5: Publish the Work Branch
 
-```bash
-git push origin <BRANCH>
-```
+Verify `git branch --show-current` equals the captured `BRANCH`. Select the
+matching operation; omitting the positional name publishes the current branch
+and sets its upstream. Neither operation tags nor opens a PR.
 
-Verify the push succeeded (exit code 0). If it fails due to an upstream tracking issue:
-```bash
-git push --set-upstream origin <BRANCH>
-```
+| Current work branch | Command |
+|---|---|
+| Feature | `tronador versions feature publish --main-branch "$PRIMARY_BRANCH"` |
+| Hotfix | `tronador versions hotfix publish --main-branch "$PRIMARY_BRANCH"` |
+
+Require `git ls-remote --exit-code --heads origin "refs/heads/$BRANCH"` to
+return exactly the local `git rev-parse HEAD` for that ref. A rejected push,
+auth failure or mismatch is a blocker, not permission for a raw or forced push.
+Repeat this same step after any subsequent authorized commit.
 
 ---
 
@@ -1204,31 +1257,23 @@ Decision rule:
   entirely.** Only existing GitHub-template authority or the verified skills source-owner
   exception from Step 0 may write `_VERSION`; marker capability or copied prose alone
   cannot lift it. Proceed directly to the
-  read-only path below and then continue to Step 7.
-- If `VERSION_FILE_WRITABLE=true` AND `RUN_VERSION_FILE_BEFORE_PR=true` → run this step.
-- If `VERSION_FILE_WRITABLE=true` AND `RUN_VERSION_FILE_BEFORE_PR=false` → **run this step
-  anyway** unless the repository has no version file at all (`NO_VERSION_FILE`). Running is
-  the default once the file exists and Step 0 established write authority.
-
-**When `VERSION_FILE_WRITABLE=true`, never infer "skip" from any of the following** — each is
-a symptom of the bug this step exists to prevent, not a policy signal:
-- The version file is stale relative to the latest tag.
-- Recent releases did not bump it.
-- `AGENTS.md` does not mention `gitflow/version/file` in its numbered workflow.
-
-In an authorized repository, when the file exists and this branch will produce a release,
-generation runs. In every protected repository this step is unconditionally skipped.
+  read-only path below and then continue to Step 6.5.
+- Otherwise generate the authorized marker if `RUN_VERSION_FILE_BEFORE_PR=true`;
+  skip when false. If the marker trails the previous release on this line, report
+  the drift and run generation rather than hand-editing or matching stale history.
 
 **Ordering:** run this step after Step 5 (branch pushed) and before any pre-release tag, so
 the `chore: Version Bump` commit is covered by that tag and the release gate's
 "no untested commits after the last tag" check stays satisfiable.
 
-If skipping, read the current version file (when present) to capture `CURRENT_VERSION`:
+If skipping, the file may be read as marker evidence only, not as the implementation release version:
 ```bash
 cat .cloudopsworks/_VERSION 2>/dev/null || cat .github/_VERSION 2>/dev/null || true
 ```
 
-If running, execute:
+If running, require `VERSION_CALC_ALLOWED=true` in addition to write authority.
+On the absence exception, preview `tronador project version --generate --dry-run`
+and compare the intended marker/version per Step 0. Then execute:
 ```bash
 git fetch origin --tags --prune
 tronador project version --generate --yes
@@ -1236,9 +1281,11 @@ git diff -- .cloudopsworks/_VERSION .github/_VERSION
 git status --short
 ```
 
-Inspect the generated diff, stage only the authorized version file, create the repository's
-required conventional `chore: Version Bump` commit, and push the current branch before
-Step 7. Do not continue with an uncommitted or unpushed generated file.
+Inspect the generated diff. If already correct and unchanged, verify it is
+tracked at the exact published branch head; do not manufacture an empty commit.
+Otherwise stage only the authorized version file, create the repository's
+required conventional `chore: Version Bump` commit, and republish via Step 5 before
+Step 6.5. Do not continue with an uncommitted or unpushed generated file.
 
 Capture the new version from the output or by reading the version file:
 ```bash
@@ -1249,7 +1296,7 @@ Capture: `NEW_VERSION` (e.g. `v1.7.0`).
 
 Verify the version did not regress against fetched remote tags:
 ```bash
-LATEST_TAG=$(git tag --sort=-v:refname | head -1)
+LATEST_TAG=$PREV_TAG  # previous stable release on this line, not a branch test tag
 NEW_VERSION=$(cat .cloudopsworks/_VERSION 2>/dev/null || cat .github/_VERSION 2>/dev/null)
 printf 'LATEST_TAG=%s\nNEW_VERSION=%s\n' "$LATEST_TAG" "$NEW_VERSION"
 ```
@@ -1262,10 +1309,64 @@ again and recalculate before continuing.
 
 ---
 
+## Step 6.5: Branch Test Tag (Only When Authorized)
+
+Skip when the repository has no branch pre-release gate and no branch tag was
+requested. If policy requires a published test tag, obtain any required user
+authorization first. This gate tests a **published feature/hotfix head before
+merge**; it never transfers ownership of the final release from CI. If the
+request is only for a test tag, report the verified tag/ref and stop there.
+
+1. Require `VERSION_CALC_ALLOWED=true` and verify Step 5 parity again at the exact tested commit. Require a verified
+   non-primary feature/hotfix and repo policy assigning the pre-release tag to
+   the operator. Fetch tags; inspect `git tag --points-at HEAD` **and** the
+   candidate from `tronador versions tag --dry-run --main-branch "$PRIMARY_BRANCH"`.
+   Publish may reuse an existing tag at HEAD instead of the candidate. STOP if
+   selection is ambiguous, stable, or not an intended policy-approved prerelease.
+2. Only then run `tronador versions tag --publish --main-branch "$PRIMARY_BRANCH"`.
+   Capture the returned tag and verify its exact remote tag object against the
+   local ref and its peeled commit against the tested head. Report the actual
+   ref (for a module, `?ref=<tag>`), not the preview. Observe any tag-triggered
+   CI; do not create a GitHub Release to accompany a test tag.
+3. Before finish **and again before merge**, require the policy's downstream test
+   evidence for that exact head/tag, or record a specifically permitted N/A and
+   its reason. A later commit invalidates earlier evidence. No deploy target or
+   test result is not a pass. The Step 0.5 merge-only path verifies existing
+   evidence read-only; it never publishes a tag or changes the approved PR.
+
+---
+
 ## Step 7: Create Pull Request
 
-Build the PR body with `+semver: <level>` in the **body** (not just the title) so
-GitVersion picks it up during merge.
+Verify the published branch/head and intended `PR_BASE` first. Query GitHub
+for an existing PR with that exact head repo/branch and base; do not create a
+duplicate or silently edit a reviewed PR. Use Step 0.5 for a requested resumption.
+
+- Prefer normal `tronador versions feature finish` or `tronador versions hotfix finish`
+  for a canonical-selector repo **when its opening PR contract allows Tronador's
+  stock title/body**. Run the matching command on the verified published branch
+  with `GH_REPO="$REPO_SLUG"` and `--main-branch "$PRIMARY_BRANCH"`; it opens a
+  PR, not a merge. Feature finish targets develop on GitFlow and primary otherwise;
+  hotfix finish targets primary. If policy allows adding metadata immediately
+  after opening, use `gh pr edit` on that exact new PR to set the title and full
+  body (including semver and test evidence) before review. Re-read the PR.
+- Use the explicit `gh pr create` below **instead of** finish if a semver-bearing
+  body, title, draft or other policy metadata must be present at creation, if
+  opening triggers consume them, or for the bounded config-absence exception.
+  If opening requirements are unknown, supply the correct metadata at creation.
+  The CLI's stock PR body has no semver annotation or custom-body flag in v0.6.1.
+- Do not try an alternative creator after a failure: inspect the remote first
+  and STOP on ambiguous state. Never use `finish --local` here: it can merge,
+  tag, push and delete outside the PR gates. `versions release finish` is for
+  separately requested promotion; under GitFlow it can open **two** PRs and
+  is not a shortcut for feature delivery. When separately asked to promote a
+  release under repo policy, use its `tronador versions release start`,
+  `release publish` and PR-mode `release finish` sequence. Verify every target,
+  required PR body, approval and check independently; never substitute a single
+  primary PR for GitFlow back-integration or reuse the feature-only checklist.
+
+Include `SEMVER_ANNOTATION` in the **body** (not just the title) and the
+repo-required test evidence or allowed N/A. Example for the explicit creator:
 
 ```bash
 gh pr create \
@@ -1283,13 +1384,16 @@ EOF
 )"
 ```
 
-Capture: `PR_NUMBER` from the output URL (last path segment).
+Capture `PR_NUMBER` and confirm with `gh pr view` that the head repository,
+branch, SHA, base and body match the intended PR before waiting for checks.
+Record this SHA as `CHECKED_HEAD` (on Step 0.5 use `APPROVED_PR_HEAD`).
 
 ---
 
 ## Step 8: Wait for CI Checks (BLOCKING — never skip or shortcut)
 
-This step is the sole gate before merge. Do not proceed to Step 9 until all checks
+Apply the repo's review and Step 6.5 test-evidence gates to the exact PR head
+(including resumed PRs). Do not proceed to Step 9 until all checks
 pass or CI is confirmed absent. There is no bypass.
 
 **8a. Poll for check registration (max 60 seconds).**
@@ -1298,7 +1402,7 @@ Run the following loop — it exits when at least one check appears or 60 second
 ```bash
 for i in $(seq 1 6); do
   COUNT=$(gh pr view <PR_NUMBER> --repo <REPO_SLUG> \
-    --json statusCheckRollup --jq '.statusCheckRollup | length')
+    --json statusCheckRollup --jq '.statusCheckRollup | length') || exit 1
   [ "$COUNT" -gt 0 ] && break
   echo "No checks yet (attempt $i/6). Waiting 10s..."
   sleep 10
@@ -1313,11 +1417,13 @@ Use `CI_REQUIRED` captured in Step 0:
 - If `CI_REQUIRED=false` → no CI configured; proceed to Step 9.
 - If `CI_REQUIRED=unknown`:
   ```bash
-  gh api repos/<REPO_SLUG>/actions/workflows \
+  gh api --paginate "repos/$REPO_SLUG/actions/workflows" \
     --jq '[.workflows[] | select(.state=="active")] | length'
   ```
-  - If count > 0 → **STOP** with the same message as `CI_REQUIRED=true`.
-  - If count == 0 → no CI configured; proceed to Step 9.
+  - If any page has count > 0 → **STOP** with the same message as `CI_REQUIRED=true`.
+  - If all pages have count 0, also inspect branch protection/rulesets and repo policy per
+    Step 0. Proceed only if no checks are required. An API failure or unresolved
+    requirement is a STOP, not an empty result.
 
 **8c. Wait for all checks to complete:**
 ```bash
@@ -1330,10 +1436,11 @@ gh pr checks <PR_NUMBER> --repo <REPO_SLUG>
 ```
 
 If **ANY** check is not in a pass / success / ✓ state → **STOP**. Report the failed
-check name and logs. Ask the user: "Check `<name>` failed. Fix and re-push, or
-force-merge?"
+check name and logs; never offer a force merge.
 
-Only proceed to Step 9 when **ALL** reported checks are passing.
+Re-read the PR immediately before merge. Require the same head SHA, head repo,
+base, applicable approval and body observed before polling, and that Step 6.5
+evidence still applies. If anything changed, STOP and repeat the gates.
 
 ---
 
@@ -1355,24 +1462,20 @@ gh pr merge <PR_NUMBER> --repo <REPO_SLUG> --merge \
 
 <SEMVER_ANNOTATION>
 EOF
-)" <DELETE_BRANCH_FLAG> <MATCH_HEAD_FLAG>
+)" --delete-branch=false --match-head-commit "$CHECKED_HEAD"
 ```
 
-For Step 0.5, set `<MATCH_HEAD_FLAG>` to
-`--match-head-commit <APPROVED_PR_HEAD>`; otherwise omit it. A head mismatch
-aborts the merge and requires a fresh approval and Step 8 check. Do not use
+Use the recorded `CHECKED_HEAD` that passed Step 8 (never a new SHA obtained
+after polling); for Step 0.5 it must equal `APPROVED_PR_HEAD`. A mismatch
+aborts the merge and requires fresh evidence. Do not use
 `--admin` or `--auto` to bypass this gate.
 
-Resolve `<DELETE_BRANCH_FLAG>` as follows before running the command:
-- If `GITFLOW_FEATURE_DELIVERY=true` → use `--delete-branch=false`. This rule has
-  highest priority: preserve the GitFlow feature source branch at merge time for
-  the separate release-branch workflow and do not defer preservation to cleanup.
-- Else if `PURGE_RELEASE_BRANCH=true` AND `PRESERVE_REMOTE_BRANCH=false` → use `--delete-branch`
-- Otherwise → use `--delete-branch=false`
-
-Never use `--delete-branch` when `PRESERVE_REMOTE_BRANCH=true`, regardless of
-`PURGE_RELEASE_BRANCH`. Active CI workflows must be able to complete before any
-remote branch is removed.
+Do not ask `gh` to delete the source at merge time. Check the owner-side setting
+with `gh api "repos/$REPO_SLUG" --jq '.delete_branch_on_merge'`. STOP if it
+would violate required retention (GitFlow feature delivery or explicit repo policy),
+or its state cannot be verified where retention is mandatory. For ordinary
+CI-owned delivery, report any server/CI cleanup as owner-side; the agent does
+not delete, change repository settings or recreate the branch.
 
 Verify merge:
 ```bash
@@ -1419,7 +1522,7 @@ whether CI is absent, pending, failed, successful, or unavailable:
 ```text
 ## Feature Delivery Terminal Summary
 
-- Branch:     <BRANCH> (preserved; no merge-time or post-merge deletion)
+- Branch:     <BRANCH> (not deleted by this skill; report any CI-owned cleanup separately)
 - PR:         #<PR_NUMBER> → develop (merged at <MERGE_SHA>)
 - CI status:  <FEATURE_CI_STATUS plus observed run URLs, if any>
 - Release:    not performed; a separate GitFlow release-branch workflow owns
@@ -1432,18 +1535,18 @@ release branch automatically, and do not tag, publish, create/edit a GitHub Rele
 or claim that a release occurred. CI failure or absence is reported evidence, not a
 fallback into release or cleanup behavior.
 
-If `GH_IS_TEMPLATE=true` and `PUBLISH_MODE=local`, skip this step and continue
-to Step 10.
-
-For every implementation repository, perform one final read-only ownership
+For every repository, perform one final read-only ownership
 check after merge and before any local version/tag/release command. Re-run the
-Step 0 release-signal scan and list runs for `MERGE_SHA`. If a matching workflow
+Step 0 release-signal scan against the **fetched tree at `MERGE_SHA`**, not
+the checkout left on the source or previous primary. Read the merged
+`AGENTS.md`, workflows, referenced configuration and tag-triggered publishers
+(`git ls-tree`, `git show`); list live workflows and runs for that SHA. If a matching workflow
 is active, a post-merge run exposes release/publish/GoReleaser jobs, or ownership
 is ambiguous, set `CI_RELEASE_OWNER_DETECTED=true` and
 `PUBLISH_MODE=ci`. This late check prevents a workflow that registered only
 after merge from being mistaken for absence of CI ownership.
 
-Only an implementation repository with positive evidence of local publication
+Only a repository with positive evidence of local publication
 and no static or running CI release owner may keep `PUBLISH_MODE=local` and skip
 the remainder of this step.
 
@@ -1545,8 +1648,8 @@ If any observed run concludes as `failure`, `cancelled`, `timed_out`,
 the run URL and conclusion. Do not rerun it or perform any release mutation.
 
 When all post-merge runs succeed or are legitimately skipped, inspect the
-resulting tag/release read-only and continue to Step 10. CI remains the release
-owner even after its run completes; Steps 12-14 stay forbidden.
+resulting tag/release read-only and go directly to Step 15. CI remains the release
+owner even after its run completes; skip Steps 10–14.
 
 ---
 
@@ -1554,122 +1657,92 @@ owner even after its run completes; Steps 12-14 stay forbidden.
 
 ```bash
 git checkout <PRIMARY_BRANCH>
-git pull origin <PRIMARY_BRANCH>
+git pull --ff-only origin <PRIMARY_BRANCH>
 git log --oneline -5
 ```
 
-Confirm the merge commit appears in the log.
+Require `HEAD`, the live remote primary tip and `MERGE_SHA` to match exactly before local publication. A later merge needs a new release decision, not a retry on the newer tip.
 
 ---
 
 ## Step 11: Clean Up Release Branch
 
-Choose the cleanup path from `PURGE_RELEASE_BRANCH` **and** `PRESERVE_REMOTE_BRANCH`:
+Run only after Step 10 and a verified merge. Require `PUBLISH_MODE=local`,
+`PURGE_RELEASE_BRANCH=true`, `PRESERVE_REMOTE_BRANCH=false` and
+`GITFLOW_FEATURE_DELIVERY=false`. Keep the source by default in implementation repos. Skip cleanup entirely in
+CI observer mode, for GitFlow feature delivery, when preservation is required,
+or when only local deletion was authorized. Tronador purge operates on **both**
+local and remote refs; never turn a local-only request into a two-sided purge.
 
-- If `PUBLISH_MODE=ci`: skip branch cleanup entirely. Keep both local and remote
-  branches untouched. A CI-owned post-merge release may retain branch context
-  for attribution, delayed jobs, GoReleaser, or follow-up automation. Observers
-  never decide when that context is safe to remove.
-- If `PURGE_RELEASE_BRANCH=true` and `PRESERVE_REMOTE_BRANCH=false`: purge the merged `feature/*` branch from both remote and local automatically. Do **not** ask for confirmation.
-- If `PURGE_RELEASE_BRANCH=false`: keep the previous conservative behavior — only offer optional local deletion for `feature/*` branches, and do not force remote deletion.
+For a local publisher with a policy-authorized two-sided purge (including the
+template feature policy in Step 2), require the exact merged PR, source SHA,
+target, current local/remote parity and a verified canonical selector. A
+missing selector, changed source, failed lookup, auth error, or unproven merge
+means retain the refs. Run only the applicable command using the captured
+short feature name or version (not the full ref):
 
-### Template-style repositories (`PUBLISH_MODE=local` and `PURGE_RELEASE_BRANCH=true`)
+| Merged branch authorized for cleanup | Guarded operation |
+|---|---|
+| `feature/<slug>` | `tronador versions feature purge "$SLUG" --main-branch "$PRIMARY_BRANCH" --allow-network` |
+| `hotfix/<version>` | `tronador versions hotfix purge "$VERSION" --main-branch "$PRIMARY_BRANCH" --allow-network` |
+| `release/<version>` (separate promotion) | `tronador versions release purge "$VERSION" --main-branch "$RELEASE_TARGET" --allow-network` |
 
-**First, check `PRESERVE_REMOTE_BRANCH`** before any deletion.
-
-#### When `PRESERVE_REMOTE_BRANCH=true` (CI owns release automation)
-
-Do not delete either branch. Do not pass a branch deletion flag during merge,
-and do not run local or remote deletion commands after merge. Report the branch
-as retained for CI ownership.
-
-#### When `PRESERVE_REMOTE_BRANCH=false` (no active CI workflows)
-
-Delete from both remote and local automatically. Do **not** ask for confirmation.
-
-```bash
-git fetch origin --prune
-
-if git ls-remote --exit-code --heads origin "<BRANCH>" >/dev/null 2>&1; then
-  git push origin --delete "<BRANCH>"
-fi
-
-if git show-ref --verify --quiet "refs/heads/<BRANCH>"; then
-  git branch -D "<BRANCH>"
-fi
-
-git fetch origin --prune
-git branch --list "<BRANCH>"
-git branch -r --list "origin/<BRANCH>"
-```
-
-Success condition:
-- `git branch --list "<BRANCH>"` returns nothing
-- `git branch -r --list "origin/<BRANCH>"` returns nothing
-
-### Non-template repositories (`PUBLISH_MODE=local` and `PURGE_RELEASE_BRANCH=false`)
-
-Only delete if branch type is `feature` (hotfix branches are tracked by tronador).
-Ask user: "Delete local branch `<BRANCH>`?"
-
-If yes:
-```bash
-git branch -d "<BRANCH>"
-```
+For a separately requested release cleanup, set `RELEASE_TARGET` to the verified
+primary unless the exact merged PR and repo policy explicitly designate a support
+target. For GitFlow releases, verify **both** that destination and `develop`. Never
+substitute a different destination to make purge succeed. Verify the local
+and live remote refs are gone after success; stop on refusal or partial
+cleanup. No force delete, raw remote deletion, or Make fallback.
 
 ---
 
 ## Step 12: Tag and Publish (Local-Publish Repositories Only)
 
-Tag and publish via Tronador CLI is applicable only when `PUBLISH_MODE=local`.
+This **final stable tag** path applies only when `PUBLISH_MODE=local`. Branch test tags have a separate authorization gate in Step 6.5.
 
 Decision rule:
 - If `PUBLISH_MODE=ci` → skip this entire step and proceed to Step 15. CI owns
   tag + release after merge. This is an absolute ownership boundary, not a race:
   never run local tagging/publication even if CI is slow, fails, is cancelled,
   waits for approval, or has not produced a tag or release yet.
-- If `PUBLISH_MODE=local` → run both targets below.
+- If `PUBLISH_MODE=local` → tag only the verified release merge.
 
-If `PUBLISH_MODE=local`, run:
+If `PUBLISH_MODE=local`, require `VERSION_CALC_ALLOWED=true` before running:
 
 ```bash
 git fetch origin --tags --prune
-tronador versions tag --publish
+tronador versions tag --dry-run --main-branch "$PRIMARY_BRANCH"
+git tag --points-at HEAD
 ```
 
-Capture the tag name from output (e.g. `Tagged v1.7.0...`). Confirm:
+A dry run calculates a candidate, not necessarily the tag that will be selected.
+Require the intended stable tag for the verified merge; stop on a conflicting
+or ambiguous existing tag/owner or failed parity check. Only then publish:
+
 ```bash
-git tag --sort=-v:refname | head -3
+tronador versions tag --publish --main-branch "$PRIMARY_BRANCH"
 ```
 
-**STOP** if tagging fails with "must be in the latest commit of the branch". This means
-remote is ahead — run `git pull origin <PRIMARY_BRANCH>` and retry.
-
-**If Tronador exits non-zero with "already exists"** in a positively identified
-local-publish repository, stop mutating and verify read-only whether an external
-publisher created the tag:
-```bash
-git fetch --tags && git tag --sort=-v:refname | head -3
-```
-Do not race that publisher or overwrite its output. Reclassify the repository as
-`PUBLISH_MODE=ci`, enter release observer mode, and skip Steps 13-14.
-
-> **Note:** `tronador versions tag --publish` guarantees the git tag is pushed to the
-> remote. It does **not** guarantee a GitHub release is created. Always proceed through Steps 13–14 to build the
-> changelog and create the GitHub release. Step 14 checks for an existing release
-> and fails closed to read-only observer mode rather than editing another publisher's
-> output.
+Capture the exact returned `NEW_TAG`. Verify the advertised remote tag object
+matches the local `refs/tags/$NEW_TAG` and its peeled commit equals `MERGE_SHA`.
+An already-published identical tag may be a no-op, not a newly created release.
+Recheck publication ownership after the tag push: if a tag-triggered workflow
+can create the release, reclassify to CI ownership, observe the run at the
+verified tagged merge and skip Steps 13–14. A local tag is not
+authority to compete with the release job.
+Do not advance primary, overwrite a tag or retry with manual Git on conflict;
+inspect ownership read-only. Tag publication is not GitHub Release creation.
 
 ---
 
 ## Step 13: Build Changelog (Local-Publish Repositories Only)
 
-Get commits between the previous tag and the new tag:
+Get commits between the previous tag and the verified new tag (omit the compare link for a first release):
 
 ```bash
-PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
-NEW_TAG=$(git tag --sort=-v:refname | head -1)
-git log ${PREV_TAG}..${NEW_TAG} --pretty=format:"%H|%s|%an|%ad" --date=short
+# Use the previous release on this target line from Step 0, not the next
+# lexically sorted tag (which could be a branch test tag).
+git log "${PREV_TAG:+$PREV_TAG..}$NEW_TAG" --pretty=format:"%H|%s|%an|%ad" --date=short
 ```
 
 Classify each commit:
@@ -1709,15 +1782,17 @@ Where `<commit-url>` = `https://github.com/<REPO_SLUG>/commit/<full-sha>`.
 
 ## Step 14: Create GitHub Release (Local-Publish Repositories Only)
 
-First check if the release already exists:
+Query the release for the exact verified tag:
 
 ```bash
-gh release view <NEW_TAG> --repo <REPO_SLUG> 2>/dev/null && echo "EXISTS" || echo "NOT_FOUND"
+gh api "repos/$REPO_SLUG/releases/tags/$NEW_TAG"
 ```
 
-**If NOT_FOUND:** create it:
+Only an authenticated, confirmed not-found response with verified repository
+access is absence. Other errors STOP. **If NOT_FOUND:** create it using the
+existing tag only:
 ```bash
-gh release create <NEW_TAG> \
+gh release create <NEW_TAG> --verify-tag \
   --repo <REPO_SLUG> \
   --title "<NEW_TAG> - <Short Description>" \
   --notes "<changelog from Step 13>"
@@ -1741,7 +1816,7 @@ repo reported `NO_VERSION_FILE` or `VERSION_FILE_WRITABLE=false`:
 ```bash
 git fetch origin --tags --prune
 VERSION_PATH=$(ls .cloudopsworks/_VERSION .github/_VERSION 2>/dev/null | head -1)
-printf 'file=%s tag=%s\n' "$(cat "$VERSION_PATH")" "$(git tag --sort=-v:refname | head -1)"
+printf 'file=%s tag=%s\n' "$(cat "$VERSION_PATH")" "$NEW_TAG"
 ```
 
 The two values must be equal. If they disagree, **say so explicitly in the
@@ -1760,7 +1835,7 @@ VERSION_PATH=$(ls .cloudopsworks/_VERSION .github/_VERSION 2>/dev/null | head -1
 printf 'VERSION_FILE_WRITABLE=%s\nVERSION_PATH=%s\n' "$VERSION_FILE_WRITABLE" "$VERSION_PATH"
 if [ "$VERSION_FILE_WRITABLE" = true ] && [ -n "$VERSION_PATH" ]; then
   git show --stat --oneline <MERGE_SHA> -- "$VERSION_PATH"
-  cat "$VERSION_PATH"
+  git show "<MERGE_SHA>:$VERSION_PATH"
 fi
 gh run list --repo <REPO_SLUG> --commit <MERGE_SHA> --limit 100 \
   --json databaseId,name,workflowName,event,status,conclusion,url
@@ -1776,9 +1851,9 @@ incomplete CI-owned release is not a local-release fallback.
 Then print a concise summary:
 
 ```
-## Release Complete
+## Release Status
 
-- Branch:   <BRANCH>
+- Branch:   <BRANCH> (retained, purged by Step 11, or removed by the owner)
 - PR:       #<PR_NUMBER>  (<URL>)
 - Version:  <PREV_VERSION> → <NEW_TAG or pending/missing CI tag>
 - _VERSION: <file value>  (matches tag / MISMATCH / protected / CI-owned)
@@ -1804,25 +1879,21 @@ Then print a concise summary:
   release already exists during a supposedly local publish, stop mutation,
   reclassify to CI-owned observation, and never edit its notes or assets.
 - **Never delete either branch when `PRESERVE_REMOTE_BRANCH=true`.** When
-  `PUBLISH_MODE=ci`, keep both local and remote branches untouched. Never pass
+  `PUBLISH_MODE=ci`, leave branch cleanup to its owner. Never pass
   `--delete-branch` to `gh pr merge`, run `git push origin --delete`, or delete
   the local branch. CI or a human owner decides later cleanup.
 - **GitFlow feature delivery terminates after the develop merge and one read-only CI
   snapshot.** Preserve the source branch during Step 9 and do not enter Steps 10–15,
   regardless of repository template status or CI outcome. A separate release-branch
   workflow owns promotion and release.
-- **GitHub template repos use `PUBLISH_MODE=local` for actual release runs** — when
-  `GH_IS_TEMPLATE=true`, GitHub Actions are disabled and no CI workflow will ever run,
-  even if `pr-merge-tagging.yml` or `release-management.yml` exist in
-  `.github/workflows/`. The `PUBLISH_MODE=ci` detection from workflow file presence is
-  overridden to `PUBLISH_MODE=local` in Step 0. Except for the terminal GitFlow feature
-  delivery path, run Steps 12–14 for template release runs.
+- **Template status alone is not publication or CI-check evidence.** Apply the
+  verified ownership and checks policy from Step 0 to both templates and implementations.
 - **`tronador versions tag --publish` pushes the tag** — it does not create a
   GitHub release. In a positively identified local-publish repository, continue
   to Steps 13–14 and use `gh release create` only when no release exists.
-- **If `gh pr checks` or `statusCheckRollup` reports no checks** — this is ambiguous: checks may not have registered yet. Always complete Step 8a–8b (60-second poll + CI presence check) before concluding CI is absent. Never interpret "no checks" as "no CI" without evidence. **Exception: when `GH_IS_TEMPLATE=true`, no checks will ever register** — GitHub disables Actions on template repositories by default. Skip the poll entirely; `CI_REQUIRED=false` for all template repos regardless of what workflows exist in `.github/workflows/`.
-- **Git lock files** (`.git/index.lock`): if encountered, run `rm -f .git/index.lock` before retrying.
-- **Stale hotfix branches**: if `tronador versions hotfix start` fails with a branch-exists error, check with `git branch -a | grep hotfix` and delete stale ones with `git branch -D hotfix/<version>`.
+- **No registered checks** is not proof that no checks are required. Use Step 8.
+- **Existing hotfix branch or Git lock:** STOP and inspect the owner/state.
+  Do not remove a lock, delete a branch or retry with force to clear a CLI guard.
 - **Never use `--no-verify`** on commits or pushes.
 - **Uncommitted changes must become a conventional commit before release actions continue.** Do not push, open a PR, merge, tag, or publish while relevant release changes remain uncommitted.
 - **If repo-local policy requires commit trailers** (for example Lore-style
