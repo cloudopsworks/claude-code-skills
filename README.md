@@ -52,7 +52,7 @@ Current packaged skills include:
 
 | Skill | Purpose |
 |-------|---------|
-| `cw-release` | Release workflow for repositories using GitVersion GitFlow or GitHubFlow semantics |
+| `cw-release` | Tronador-first release workflow for GitFlow, GitHubFlow, and trunk-based repositories |
 | `cw-readme` | YAML-first README maintenance workflow for CloudOps Works repositories |
 
 ## Usage
@@ -117,6 +117,16 @@ Invoke the release workflow in a compatible agent after installation:
 ```text
 /cw-release
 ```
+
+In an implementation repository, `cw-release` uses `tronador versions` to
+start and publish the work branch; no Makefile or template marker is needed
+for those operations. It leaves the template-generation `_VERSION` alone,
+verifies any required branch test tag, and observes CI when CI owns the
+final release. GitHub review and merge checks still apply.
+
+From a checkout of this skills repository, run
+`bash tests/cw-release-tronador-smoke.sh` with Git and Tronador installed.
+The smoke test uses disposable local repositories; it does not contact GitHub.
 
 Invoke the README maintenance workflow:
 
